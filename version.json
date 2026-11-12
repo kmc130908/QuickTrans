@@ -1,5 +1,6 @@
 {
-  "version": "1.1.0",
+  "version": "1.1.1",
   "url": "https://github.com/kmc130908/QuickTrans/releases/latest",
-  "notes": "首个公开版本：本地划词翻译、截图 OCR、系统语音朗读、组件按需下载（GPU 引擎 / 模型）。"
+  "notes": "启动确认感：手动启动时自动打开设置页（可在设置里关闭）；设置页新增版本显示与手动检查更新；安装界面加入 GPU/模型下载说明。"
 }
+
