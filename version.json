@@ -1,6 +1,5 @@
 {
   "version": "1.1.1",
-  "url": "https://github.com/kmc130908/QuickTrans/releases/latest",
-  "notes": "启动确认感：手动启动时自动打开设置页（可在设置里关闭）；设置页新增版本显示与手动检查更新；安装界面加入 GPU/模型下载说明。"
+  "url": "https://github.com/kmc130908/QuickTrans/releases/download/v1.1.1/QuickTrans.exe",
+  "notes": "支持软件内下载更新：设置页检查更新后可一键下载，重启自动替换完成升级；手动启动时自动打开设置页；安装向导加入组件下载说明。"
 }
-
