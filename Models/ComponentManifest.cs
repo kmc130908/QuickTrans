@@ -61,7 +61,7 @@ public static class DefaultManifest
 {
     // 自己上传的引擎和 Hy-MT2 模型放在这里，替换用户名即可
     private const string RepoBase =
-        "https://github.com/你的用户名/QuickTrans/releases/download/v1.1.0";
+        "https://github.com/kmc130908/QuickTrans/releases/download/v1.1.0";
 
     // 阿里 ModelScope 的官方仓库，国内直连
     private const string Qwen06 =
