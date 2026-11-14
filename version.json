@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
-  "url": "https://github.com/kmc130908/QuickTrans/releases/download/v1.1.1/QuickTrans.exe",
-  "notes": "支持软件内下载更新：设置页检查更新后可一键下载，重启自动替换完成升级；手动启动时自动打开设置页；安装向导加入组件下载说明。"
+  "version": "1.2.0",
+  "url": "https://github.com/kmc130908/QuickTrans/releases/download/v1.2.0/QuickTrans.exe",
+  "notes": "浮窗交互全面优化：翻译中不再卡顿、流式输出更顺滑、操作栏位置固定；朗读可随时停止；自动关闭逻辑重构（切走才关闭、新增定时关闭）。"
 }
