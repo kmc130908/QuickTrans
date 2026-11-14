@@ -30,7 +30,6 @@ public partial class SettingsWindow : Window
     private readonly EngineManager _engine;
     private readonly ObservableCollection<ModelRow> _rows = new();
     private readonly List<LangOption> _langOptions = new();
-    private bool _gpuChecked;
     private bool _gpuOk;
 
     private static readonly string[] Languages =
@@ -87,8 +86,10 @@ public partial class SettingsWindow : Window
         // 等界面彻底稳定后再把"有修改"状态清零。
         Loaded += (_, _) =>
         {
-            // 从浮窗（ShowActivated=false 的无焦点窗口）打开时，系统可能不给设置页焦点，
-            // 表现为闪一下缩进任务栏。这里强制拉回前台：恢复 Normal 再闪一下 Topmost。
+            // 从浮窗（ShowActivated=false 的无焦点窗口）打开时，系统可能不给焦点。
+            // 这里只做激活，不闪 Topmost —— 置顶状态由 OpenSettings 统一管理：
+            // 打开设置时它会把本窗口设为 Topmost、把浮窗取消置顶，
+            // 关掉后再还原。闪一下反而会让本窗口掉到浮窗下面。
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 try
@@ -98,8 +99,6 @@ public partial class SettingsWindow : Window
 
                     if (!IsVisible) Show();
                     Activate();
-                    Topmost = true;
-                    Topmost = false;
                     Focus();
                 }
                 catch { /* 窗口已在关闭流程中，忽略 */ }
@@ -129,6 +128,7 @@ public partial class SettingsWindow : Window
         ApiModelBox.Visibility = needsModel ? Visibility.Visible : Visibility.Collapsed;
         ApiKeyLabel.Visibility = needsKey ? Visibility.Visible : Visibility.Collapsed;
         ApiKeyBox.Visibility = needsKey ? Visibility.Visible : Visibility.Collapsed;
+        ApiKeyHelpLink.Visibility = needsKey ? Visibility.Visible : Visibility.Collapsed;
 
         ApiKeyLabel.Text = idx switch
         {
@@ -154,6 +154,166 @@ public partial class SettingsWindow : Window
     }
 
     private void OnApiTypeChanged(object sender, SelectionChangedEventArgs e) => ApplyApiTypeLayout();
+
+    private void OnAutoCloseChanged(object sender, RoutedEventArgs e) => ApplyAutoCloseState();
+
+    /// <summary>关掉自动消失后，秒数输入框就失去意义了，一并置灰。</summary>
+    private void ApplyAutoCloseState()
+    {
+        if (AutoCloseSecondsBox == null) return;
+
+        var on = AutoClosePopupBox.IsChecked == true;
+        AutoCloseSecondsBox.IsEnabled = on;
+        AutoCloseSecondsBox.Opacity = on ? 1.0 : 0.45;
+    }
+
+    /// <summary>打开当前接口类型的密钥申请页。</summary>
+    private void OnApiKeyHelpClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var url = _config.ApiType switch
+        {
+            "baidu" => "https://fanyi-api.baidu.com/product/11",
+            "youdao" => "https://ai.youdao.com/console/#/service-singleton/text-translation",
+            "google" => "",
+            _ => "https://platform.openai.com/api-keys",
+        };
+
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch { /* 打不开浏览器就算了 */ }
+    }
+
+    /// <summary>切换引擎版本时同步设备选项：CPU 引擎没有 CUDA，只能跑 CPU。</summary>
+    private void OnEngineVariantChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        ApplyEngineVariantState();
+    }
+
+    /// <summary>CPU 引擎时禁用 GPU 单选，并强制选回 CPU。</summary>
+    private void ApplyEngineVariantState()
+    {
+        var isCpuEngine = EngineVariantBox.SelectedIndex == 1;
+        GpuRadio.IsEnabled = !isCpuEngine;
+
+        if (isCpuEngine && GpuRadio.IsChecked == true)
+            CpuRadio.IsChecked = true;
+    }
+
+    private UpdateService.UpdateInfo? _pendingUpdate;
+    private bool _updateDownloaded;
+
+    /// <summary>
+    /// 更新按钮的三态：检查 → 有新版则下载 → 下载完则重启更新。
+    /// </summary>
+    private async void OnCheckUpdateClick(object sender, RoutedEventArgs e)
+    {
+        // 状态三：已经下载好了，重启完成更新
+        if (_updateDownloaded)
+        {
+            var ok = MessageBox.Show(this,
+                "点击确定后软件会关闭，自动替换为新版本并重新启动。\n\n" +
+                "如果替换失败，安装目录里会保留 QuickTrans.exe.old，可以手动改回来。",
+                "重启并更新", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+
+            if (ok != MessageBoxResult.OK) return;
+
+            if (UpdateService.ApplyAndRestart())
+            {
+                Application.Current.Shutdown();
+            }
+            else
+            {
+                UpdateHint.Text = "启动更新程序失败，请手动下载覆盖。";
+            }
+            return;
+        }
+
+        // 状态二：已发现新版，开始下载
+        if (_pendingUpdate != null)
+        {
+            await DownloadUpdateAsync(_pendingUpdate);
+            return;
+        }
+
+        // 状态一：检查
+        CheckUpdateButton.IsEnabled = false;
+        CheckUpdateButton.Content = "检查中…";
+        UpdateHint.Text = "";
+
+        try
+        {
+            var info = await new UpdateService().CheckAsync();
+            if (info == null)
+            {
+                UpdateHint.Text = $"已是最新版本（{UpdateService.CurrentVersion}）";
+                CheckUpdateButton.Content = "检查更新";
+            }
+            else
+            {
+                _pendingUpdate = info;
+                UpdateHint.Text = $"发现新版本 {info.Version}。{info.Notes}";
+                CheckUpdateButton.Content = "下载更新";
+            }
+        }
+        catch (Exception ex)
+        {
+            UpdateHint.Text = "检查失败：" + ex.Message;
+            CheckUpdateButton.Content = "检查更新";
+        }
+        finally
+        {
+            CheckUpdateButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>下载新版本的 exe，下载完按钮变成「重启并更新」。</summary>
+    private async Task DownloadUpdateAsync(UpdateService.UpdateInfo info)
+    {
+        CheckUpdateButton.IsEnabled = false;
+        CheckUpdateButton.Content = "下载中…";
+
+        var progress = new Progress<(long Received, long Total)>(p =>
+        {
+            UpdateHint.Text = p.Total > 0
+                ? $"正在下载 {info.Version}：{p.Received / 1024.0 / 1024:F0} / {p.Total / 1024.0 / 1024:F0} MB"
+                : "正在下载…";
+        });
+
+        try
+        {
+            await new UpdateService().DownloadAsync(info, progress);
+            _updateDownloaded = true;
+            UpdateHint.Text = $"新版本 {info.Version} 已下载完成，点「重启并更新」生效。";
+            CheckUpdateButton.Content = "重启并更新";
+        }
+        catch (Exception ex)
+        {
+            UpdateHint.Text = "下载失败：" + ex.Message + "（已下载部分会保留，可重试）";
+            CheckUpdateButton.Content = "重新下载";
+        }
+        finally
+        {
+            CheckUpdateButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>打开组件管理窗口。</summary>
+    private void OnOpenComponentsClick(object sender, RoutedEventArgs e)
+    {
+        var win = new ComponentWindow(new ComponentManager(AppContext.BaseDirectory))
+        {
+            Owner = this,
+        };
+        win.ShowDialog();
+    }
 
     private void OnTtsRateChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => UpdateTtsRateLabel();
 
@@ -460,6 +620,11 @@ public partial class SettingsWindow : Window
         TtsRateSlider.Value = Math.Clamp(_config.TtsRatePercent, -50, 100);
         UpdateTtsRateLabel();
 
+        // 关于与更新
+        VersionText.Text = UpdateService.CurrentVersion;
+        ShowSettingsOnStartupBox.IsChecked = _config.ShowSettingsOnStartup;
+        UpdateHint.Text = "";
+
         HotkeyBox.Text = _config.Hotkey;
         OcrHotkeyBox.Text = _config.OcrHotkey;
 
@@ -477,6 +642,7 @@ public partial class SettingsWindow : Window
 
         AutoStartBox.IsChecked = AutoStartService.IsEnabled();
         EngineVariantBox.SelectedIndex = string.Equals(_config.EngineVariant, "cpu", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        ApplyEngineVariantState();
 
         // 卸载策略
         switch (_config.UnloadPolicy)
@@ -501,6 +667,13 @@ public partial class SettingsWindow : Window
 
         IconStyleBox.SelectedIndex = Math.Clamp(_config.TrayIconStyle - 1, 0, 3);
 
+        AutoClosePopupBox.IsChecked = _config.PopupAutoClose;
+        AutoCloseSecondsBox.Text = _config.PopupAutoCloseSeconds.ToString();
+        AutoCloseHoverBox.IsChecked = _config.PopupAutoClosePauseOnHover;
+        TimedCloseBox.IsChecked = _config.PopupTimedCloseEnabled;
+        TimedCloseSecondsBox.Text = _config.PopupTimedCloseSeconds.ToString();
+        ApplyAutoCloseState();
+
         // 常用语言
         _langOptions.Clear();
         foreach (var lang in Languages)
@@ -523,23 +696,24 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        if (!_gpuChecked)
+        // 每次都重新检测：引擎版本（gpu/cpu）切换后 GPU 能力会变，
+        // 缓存旧结果会导致「切回 GPU 引擎后仍显示未检测到 GPU」。
+        EngineStatus.Text = "正在检测显卡…";
+        _gpuOk = await Task.Run(() => EngineManager.DetectGpu(_engine.EngineDir));
+
+        // 只有一套引擎时不提供切换；引擎没有 CUDA 时不提供设备选择
+        var (hasGpuEngine, hasCpuEngine) = EngineManager.DetectVariants(_engine.BaseDir);
+        var canSwitch = hasGpuEngine && hasCpuEngine;
+        EngineVariantPanel.Visibility = canSwitch ? Visibility.Visible : Visibility.Collapsed;
+        EngineVariantHint.Visibility = canSwitch ? Visibility.Visible : Visibility.Collapsed;
+
+        // GPU 能力决定设备选择是否可见：不管之前是什么状态，都按当前结果重设，
+        // 避免「切到 CPU 引擎隐藏了设备选择、切回 GPU 引擎却不恢复」的问题。
+        DevicePanel.Visibility = _gpuOk ? Visibility.Visible : Visibility.Collapsed;
+        GpuRadio.IsEnabled = _gpuOk;
+        if (!_gpuOk)
         {
-            EngineStatus.Text = "正在检测显卡…";
-            _gpuOk = await Task.Run(() => EngineManager.DetectGpu(_engine.EngineDir));
-            _gpuChecked = true;
-
-            // 只有一套引擎时不提供切换；引擎没有 CUDA 时不提供设备选择
-            var (hasGpuEngine, hasCpuEngine) = EngineManager.DetectVariants(_engine.BaseDir);
-            var canSwitch = hasGpuEngine && hasCpuEngine;
-            EngineVariantPanel.Visibility = canSwitch ? Visibility.Visible : Visibility.Collapsed;
-            EngineVariantHint.Visibility = canSwitch ? Visibility.Visible : Visibility.Collapsed;
-
-            if (!_gpuOk)
-            {
-                DevicePanel.Visibility = Visibility.Collapsed;
-                CpuRadio.IsChecked = true;
-            }
+            CpuRadio.IsChecked = true;
         }
 
         // 纯 CPU 精简版：只有一套引擎且它没有 CUDA，不是"检测不到显卡"
@@ -772,10 +946,20 @@ public partial class SettingsWindow : Window
         _config.AutoDirection = AutoDirectionBox.IsChecked == true;
         _config.PopupOpacity = Math.Clamp(OpacitySlider.Value, 0.3, 1.0);
         _config.TrayIconStyle = IconStyleBox.SelectedIndex + 1;
+        _config.PopupAutoClose = AutoClosePopupBox.IsChecked == true;
+        _config.PopupAutoCloseSeconds = int.TryParse(AutoCloseSecondsBox.Text.Trim(), out var sec)
+            ? Math.Clamp(sec, 0, 600)
+            : 5;
+        _config.PopupAutoClosePauseOnHover = AutoCloseHoverBox.IsChecked == true;
+        _config.PopupTimedCloseEnabled = TimedCloseBox.IsChecked == true;
+        _config.PopupTimedCloseSeconds = int.TryParse(TimedCloseSecondsBox.Text.Trim(), out var tsec)
+            ? Math.Clamp(tsec, 1, 3600)
+            : 30;
         _config.AutoStart = AutoStartBox.IsChecked == true;
 
         // 语音朗读
         _config.TtsEnabled = TtsEnabledBox.IsChecked == true;
+        _config.ShowSettingsOnStartup = ShowSettingsOnStartupBox.IsChecked == true;
         _config.TtsRatePercent = (int)Math.Round(TtsRateSlider.Value);
 
         if (TtsVoiceZhBox.SelectedItem is string zhVoice) _config.TtsVoiceZh = zhVoice;
@@ -824,6 +1008,14 @@ public partial class SettingsWindow : Window
         _config.QuickLanguages = selected;
 
         _config.Save();
+
+        // 浮窗的自动关闭参数是静态属性，创建浮窗时才读一次。
+        // 保存设置后立刻同步，让已显示的浮窗也立即生效。
+        QuickTrans.Views.PopupWindow.AutoCloseEnabled = _config.PopupAutoClose;
+        QuickTrans.Views.PopupWindow.AutoCloseSeconds = _config.PopupAutoCloseSeconds;
+        QuickTrans.Views.PopupWindow.AutoClosePauseOnHover = _config.PopupAutoClosePauseOnHover;
+        QuickTrans.Views.PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
+        QuickTrans.Views.PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
 
         // 换了推理设备就先把当前模型卸掉，下次翻译会用新设备重新加载
         if (deviceChanged && _engine.IsRunning) _engine.Unload();

@@ -158,7 +158,7 @@
                         <StackPanel x:Name="EngineVariantPanel" Orientation="Horizontal" Margin="0,0,0,10">
                             <TextBlock Text="引擎版本" FontSize="12.5" VerticalAlignment="Center" />
                             <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="EngineVariantBox" Width="240" Margin="14,0,0,0"
-                                      VerticalAlignment="Center">
+                                      VerticalAlignment="Center" SelectionChanged="OnEngineVariantChanged">
                                 <ComboBoxItem Content="GPU 版（含 CUDA，可选 CPU/GPU）" />
                                 <ComboBoxItem Content="CPU 版（精简 62MB，只能 CPU）" />
                             </ComboBox>
@@ -171,7 +171,7 @@
                                   FontSize="12.5" Margin="0,14,0,0" />
 
                         <RadioButton x:Name="KeepLoadedRadio" GroupName="unload" FontSize="12.5"
-                                     Content="一直保留在显存里（响应最快）" Margin="0,0,0,8" />
+                                     Content="一直保留在显存 / CPU 内存里（响应最快）" Margin="0,0,0,8" />
                         <RadioButton x:Name="UnloadOnCloseRadio" GroupName="unload" FontSize="12.5"
                                      Content="浮窗关闭后立即卸载（下次翻译要重新加载，约 2–3 秒）"
                                      Margin="0,0,0,8" />
@@ -232,6 +232,38 @@
 
                         <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
                                    Text="改完保存会立即切换托盘图标；exe 文件本身的图标需要重新打包才会变。" />
+
+                        <CheckBox x:Name="AutoClosePopupBox" FontSize="12.5" Margin="0,16,0,0"
+                                  Content="切走窗口后自动关闭浮窗"
+                                  Checked="OnAutoCloseChanged" Unchecked="OnAutoCloseChanged" />
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBlock Text="等待" FontSize="12" VerticalAlignment="Center" />
+                            <TextBox x:Name="AutoCloseSecondsBox" Width="70" Margin="8,0,8,0"
+                                     VerticalContentAlignment="Center" />
+                            <TextBlock Text="秒后关闭" FontSize="12" VerticalAlignment="Center" />
+                        </StackPanel>
+
+                        <CheckBox x:Name="AutoCloseHoverBox" FontSize="12.5" Margin="0,8,0,0"
+                                  Content="鼠标停在浮窗上时暂停倒计时" />
+
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
+                                   Text="从取字的来源窗口切到其它窗口后开始计时；0 秒表示立即关闭（0 秒时忽略悬停暂停）。继续操作来源窗口不会关闭。手动输入模式不会自动关闭。" />
+
+                        <Border Background="#F6F6F8" CornerRadius="6" Padding="12,10" Margin="0,14,0,0">
+                            <StackPanel>
+                                <CheckBox x:Name="TimedCloseBox" FontSize="12.5"
+                                          Content="定时自动关闭（不切窗口也自动关）" />
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock Text="显示" FontSize="12" VerticalAlignment="Center" />
+                                    <TextBox x:Name="TimedCloseSecondsBox" Width="70" Margin="8,0,8,0"
+                                             VerticalContentAlignment="Center" />
+                                    <TextBlock Text="秒后自动关闭" FontSize="12" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
+                                           Text="翻译完成后开始计时，无论是否切走窗口，到时间自动关闭。鼠标停在浮窗上时暂停计时。" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
@@ -288,6 +320,12 @@
                             <TextBox Grid.Row="2" Grid.Column="1" x:Name="ApiModelBox" />
                         </Grid>
 
+                        <TextBlock x:Name="ApiKeyHelpLink" FontSize="12" Foreground="#3B5BA8"
+                                   Cursor="Hand" Margin="0,2,0,0"
+                                   Text="如何获取密钥 / API 地址？"
+                                   TextDecorations="Underline"
+                                   MouseLeftButtonUp="OnApiKeyHelpClick" />
+
                         <TextBlock x:Name="ApiHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
                                    Text="填任何 OpenAI 兼容接口都行：DeepSeek、智谱、DeepL 代理、公司网关。" />
                     </StackPanel>
@@ -324,6 +362,37 @@
 
                         <TextBlock x:Name="TtsHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
                                    Text="使用 Windows 自带的语音包，完全离线。想加更多声音，在「设置 → 时间和语言 → 语音」里添加。" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="关于与更新" Style="{StaticResource SectionTitle}" />
+
+                        <Grid Margin="0,2,0,10">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="当前版本" FontSize="12.5" Foreground="#6B6B75"
+                                           VerticalAlignment="Center" />
+                                <TextBlock x:Name="VersionText" FontSize="13" FontWeight="SemiBold"
+                                           Foreground="#1A1A1E" Margin="8,0,0,0"
+                                           VerticalAlignment="Center" Text="—" />
+                            </StackPanel>
+                            <Button x:Name="CheckUpdateButton" Content="检查更新"
+                                    HorizontalAlignment="Right" Padding="14,4" FontSize="12"
+                                    Cursor="Hand" Click="OnCheckUpdateClick"
+                                    Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
+                        </Grid>
+
+                        <TextBlock x:Name="UpdateHint" Style="{StaticResource Hint}"
+                                   Margin="0,0,0,10" Text="" />
+
+                        <CheckBox x:Name="ShowSettingsOnStartupBox" FontSize="12.5" Margin="0,0,0,12"
+                                  Content="手动启动软件时自动打开设置页" />
+
+                        <Button Content="管理组件（引擎 / 模型）…" HorizontalAlignment="Left"
+                                Padding="14,5" FontSize="12" Cursor="Hand"
+                                Click="OnOpenComponentsClick"
+                                Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
                     </StackPanel>
                 </Border>
 

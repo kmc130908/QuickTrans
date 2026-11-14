@@ -1,0 +1,9 @@
+# 编译产物，不入库
+bin/
+obj/
+.vs/
+*.user
+*.bak
+
+# 发布输出
+publish/

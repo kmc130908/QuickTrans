@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace QuickTrans.Services;
@@ -219,7 +220,10 @@ public sealed class EngineManager : IDisposable
     private async Task<(bool Ok, string Message)> LaunchAndWaitAsync(string ggufPath, int gpuLayers, int ctx, CancellationToken ct)
     {
         _port = FindFreePort(_port);
-        var threads = Math.Max(4, Environment.ProcessorCount / 2);
+        // 线程数降到物理核数的一半（最少 1）：CPU 推理占满核心时会把 UI 线程
+        // 挤掉，导致翻译中浮窗拖不动、按钮点不了、切 CPU 引擎无响应。
+        // 配合 Idle 优先级，推理只在空闲时跑，交互全程流畅。
+        var threads = Math.Max(1, Environment.ProcessorCount / 2);
         // --reasoning off：Qwen3 这类模型默认会先输出一段思考过程，
         // 翻译场景不需要，关掉能让结果更干净也更快。对没有思考模式的模型无副作用。
         var args = $"-m \"{ggufPath}\" --port {_port} -ngl {gpuLayers} -c {ctx} --host 127.0.0.1 -t {threads} --no-webui --reasoning off";
@@ -233,6 +237,16 @@ public sealed class EngineManager : IDisposable
             RedirectStandardError = true,
         };
 
+        // CPU 推理时 llama-server 会用 -t 线程数占满核心，把 UI 线程和鼠标
+        // 消息处理全挤掉，表现就是「翻译中浮窗拖不动、设置按钮点不了」。
+        // 这里让它以低于正常的优先级运行：翻译慢一点点，但界面始终流畅。
+        // 对 GPU 引擎无副作用——GPU 推理主要吃显卡，几乎不占用 CPU。
+        try
+        {
+            psi.Environment["LLAMA_SERVER_PRIORITY_LOW"] = "1";
+        }
+        catch { /* 环境变量操作失败时忽略 */ }
+
         try
         {
             psi.Environment["PATH"] = EngineDir + ";" + (Environment.GetEnvironmentVariable("PATH") ?? "");
@@ -242,6 +256,28 @@ public sealed class EngineManager : IDisposable
         try
         {
             _proc = Process.Start(psi);
+
+            if (_proc == null)
+            {
+                AppendLog("error: Process.Start 返回 null");
+                return (false, "启动 llama-server 失败");
+            }
+
+            // 把 llama-server 优先级降到 Idle（最低）：
+            // 本地 CPU 推理会用满所有核心，把 UI 线程和鼠标消息处理全挤掉，
+            // 表现就是「翻译中浮窗拖不动、设置按钮点不了、切 CPU 引擎直接无响应」。
+            // Idle 优先级让系统只在完全空闲时才跑推理，界面永远流畅。
+            // GPU 推理主要吃显卡，几乎不受影响。
+            try { _proc.PriorityClass = ProcessPriorityClass.Idle; } catch { }
+
+            // 把 llama-server 绑到 Job 对象：Job 句柄随主进程释放时，
+            // 系统会直接杀掉里面的所有进程。这样即使主进程被任务管理器
+            // 强杀、崩溃，也不会留下占着显存的孤儿进程。
+            if (_proc != null)
+            {
+                try { AssignProcessToJobObject(JobHandle, _proc.Handle); }
+                catch { /* 绑定失败不影响启动，还有启动时的孤儿清理兜底 */ }
+            }
             if (_proc == null) return (false, "无法启动推理引擎");
 
             _proc.OutputDataReceived += (_, e) => { if (e.Data != null) AppendLog(e.Data); };
@@ -364,9 +400,148 @@ public sealed class EngineManager : IDisposable
         return s.Length <= n ? s : s[^n..];
     }
 
+    // ---- Job Object：保证 llama-server 随主进程一起退出 ----
+    //
+    // 不用 Job 的话，主进程被强杀（任务管理器结束任务、崩溃）时 Unload 跑不到，
+    // 子进程就成了孤儿，一直占着显存。绑进 Job 后由系统负责回收。
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateJobObject(IntPtr attrs, string? name);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool SetInformationJobObject(
+        IntPtr job, int infoClass, IntPtr info, uint length);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint JobObjectLimitKillOnJobClose = 0x2000;
+
+    private static readonly IntPtr JobHandle = CreateKillOnCloseJob();
+
+    private static IntPtr CreateKillOnCloseJob()
+    {
+        try
+        {
+            var job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero) return IntPtr.Zero;
+
+            var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            info.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+
+            var length = Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
+            var buffer = Marshal.AllocHGlobal(length);
+            try
+            {
+                Marshal.StructureToPtr(info, buffer, false);
+                SetInformationJobObject(job, JobObjectExtendedLimitInformation, buffer, (uint)length);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            return job;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
     public void Dispose()
     {
         Unload();
         _http.Dispose();
+    }
+
+    /// <summary>
+    /// 清理上次异常退出遗留的 llama-server。
+    ///
+    /// 主进程被强杀（任务管理器结束任务、崩溃、开发时 taskkill）时，
+    /// OnExit 不会执行，Unload 也就没机会跑，子进程会一直占着显存。
+    /// 这里在启动时扫一遍：只杀本软件 engine / engine-cpu 目录下的进程，
+    /// 不动用户自己跑的其它 llama.cpp 服务。
+    /// </summary>
+    public static int KillOrphanServers()
+    {
+        var killed = 0;
+
+        try
+        {
+            var roots = new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "engine"),
+                Path.Combine(AppContext.BaseDirectory, "engine-cpu"),
+            };
+
+            foreach (var proc in Process.GetProcessesByName("llama-server"))
+            {
+                try
+                {
+                    var exePath = proc.MainModule?.FileName;
+                    if (string.IsNullOrWhiteSpace(exePath)) continue;
+
+                    var mine = roots.Any(r =>
+                        exePath.StartsWith(r, StringComparison.OrdinalIgnoreCase));
+                    if (!mine) continue;
+
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(2000);
+                    killed++;
+                }
+                catch
+                {
+                    // 进程可能在枚举过程中自己退了，或者没有权限读 MainModule
+                }
+                finally
+                {
+                    try { proc.Dispose(); } catch { }
+                }
+            }
+        }
+        catch
+        {
+            // 清理失败不影响主流程
+        }
+
+        return killed;
     }
 }

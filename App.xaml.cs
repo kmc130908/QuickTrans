@@ -19,7 +19,10 @@ public partial class App : System.Windows.Application
     private EngineManager? _engine;
     private AppConfig _config = null!;
     private PopupWindow? _popup;
+    private SettingsWindow? _settingsWin;
     private SpeechService? _speech;
+    private WinForms.ToolStripMenuItem? _updateItem;
+    private UpdateService.UpdateInfo? _pendingUpdate;
     private CancellationTokenSource? _cts;
     private System.Windows.Threading.DispatcherTimer? _idleTimer;
     private string _currentSource = "";
@@ -69,6 +72,10 @@ public partial class App : System.Windows.Application
         Log($"config: hotkey={_config.Hotkey} ocr={_config.OcrHotkey} engine={_config.Engine} " +
             $"model={_config.SelectedModel} unload={_config.UnloadPolicy}/{_config.UnloadMinutes}min");
 
+        // 上次被强杀/崩溃时可能留下占显存的 llama-server，启动先清一遍
+        var orphans = EngineManager.KillOrphanServers();
+        if (orphans > 0) Log($"cleaned {orphans} orphan llama-server process(es)");
+
         _engine = new EngineManager(AppContext.BaseDirectory, _config.EngineVariant);
 
         // 配置里要求自启就把注册表补上，取消勾选则清掉
@@ -92,13 +99,77 @@ public partial class App : System.Windows.Application
 
         Log("startup complete");
 
-        // 首次运行且一个模型都没有时，主动引导去组件管理里下载，
-        // 只提示一次，之后由用户在托盘菜单里自己进。
-        if (!_config.ComponentHintShown && _engine != null && _engine.ScanModels().Count == 0)
+        // 后台检查新版本，失败静默
+        _ = CheckUpdateAsync();
+
+        // 上次下载了新版本但没重启：提醒一句，更新入口在设置页
+        if (UpdateService.HasPendingUpdate())
         {
+            try
+            {
+                _tray?.ShowBalloonTip(8000, "新版本已下载",
+                    "打开设置 → 关于与更新 → 重启并更新，即可完成升级。",
+                    WinForms.ToolTipIcon.Info);
+            }
+            catch { }
+        }
+
+        // 安装向导里勾选了要下载的组件时，程序带 --install-components 参数启动，
+        // 这里直接打开组件窗口并自动开始下载，跳过欢迎页（安装时已经看过说明）。
+        var autoComponents = ParseComponentArg();
+        var interrupted = false;    // 已经弹过窗口的话，就不再弹设置页，避免叠在一起
+
+        if (autoComponents.Length > 0)
+        {
+            interrupted = true;
+            _config.WelcomeShown = true;
             _config.ComponentHintShown = true;
             _config.Save();
-            Dispatcher.BeginInvoke(new Action(OpenComponentManager),
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var w = new ComponentWindow(
+                    new ComponentManager(AppContext.BaseDirectory), autoComponents);
+                w.ShowDialog();
+            }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        }
+        // 首次使用引导：优先于其他弹窗，只出现一次
+        else if (!_config.WelcomeShown)
+        {
+            interrupted = true;
+            _config.WelcomeShown = true;
+            _config.Save();
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var w = new WelcomeWindow();
+                w.ShowDialog();
+            }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        }
+
+        // 首次运行引导：
+        //  - 一个模型都没有 → 必然要引导
+        //  - 有 NVIDIA 显卡但装的是 CPU 引擎 → 提示可以下 GPU 引擎
+        // 只提示一次，之后用户自己从托盘菜单进。
+        var guided = false;
+        if (!_config.ComponentHintShown && _engine != null)
+        {
+            var needModel = _engine.ScanModels().Count == 0;
+            var canUpgradeGpu = HasNvidiaGpu() && !HasCudaEngine();
+
+            if (needModel || canUpgradeGpu)
+            {
+                guided = true;
+                _config.ComponentHintShown = true;
+                _config.Save();
+                Dispatcher.BeginInvoke(new Action(OpenComponentManager),
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
+        }
+
+        // 手动启动（不是开机自启）时弹一下设置页，让用户确认软件确实起来了。
+        // 如果刚弹过组件引导，就不重复弹，避免两个窗口叠在一起。
+        if (!guided && !interrupted && !AutoStartService.IsAutoStartLaunch() && _config.ShowSettingsOnStartup)
+        {
+            Dispatcher.BeginInvoke(new Action(OpenSettings),
                 System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
     }
@@ -133,13 +204,20 @@ public partial class App : System.Windows.Application
         ocrItem.Click += async (_, _) => await StartOcrAsync();
 
         var inputItem = new WinForms.ToolStripMenuItem("手动输入翻译");
-        inputItem.Click += async (_, _) => await OpenInputPopupAsync();
+        inputItem.Click += (_, _) => OpenInputPopup();
 
         var settingsItem = new WinForms.ToolStripMenuItem("设置…");
         settingsItem.Click += (_, _) => OpenSettings();
 
         var componentsItem = new WinForms.ToolStripMenuItem("组件管理（引擎/模型）…");
         componentsItem.Click += (_, _) => OpenComponentManager();
+
+        _updateItem = new WinForms.ToolStripMenuItem("发现新版本…")
+        {
+            Visible = false,
+            ForeColor = System.Drawing.Color.FromArgb(0x3B, 0x5B, 0xA8),
+        };
+        _updateItem.Click += (_, _) => OpenSettings();
 
         var modelMenu = new WinForms.ToolStripMenuItem("切换本地模型");
         modelMenu.DropDownOpening += (_, _) => FillModelMenu(modelMenu);
@@ -153,6 +231,7 @@ public partial class App : System.Windows.Application
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(modelMenu);
         menu.Items.Add(componentsItem);
+        menu.Items.Add(_updateItem);
         menu.Items.Add(settingsItem);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(exitItem);
@@ -315,6 +394,13 @@ public partial class App : System.Windows.Application
 
     private PopupWindow CreatePopup()
     {
+        // 把自动关闭设置传给浮窗（静态属性，构造时读）
+        PopupWindow.AutoCloseEnabled = _config.PopupAutoClose;
+        PopupWindow.AutoCloseSeconds = _config.PopupAutoCloseSeconds;
+        PopupWindow.AutoClosePauseOnHover = _config.PopupAutoClosePauseOnHover;
+        PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
+        PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
+
         var popup = new PopupWindow();
         popup.ApplyOpacity(_config.PopupOpacity);
 
@@ -324,27 +410,15 @@ public partial class App : System.Windows.Application
 
         popup.SettingsRequested += () =>
         {
-            if (_popup is { IsVisible: true } p)
+            Log("SettingsRequested fired");
+            try
             {
-                p.Close();
-
-                // 浮窗是被动关闭的无焦点窗口，立刻弹设置会被它的关闭流程抢走焦点。
-                // 延迟一拍，等浮窗真正销毁后再开。
-                var timer = new System.Windows.Threading.DispatcherTimer
-                {
-                    Interval = TimeSpan.FromMilliseconds(150),
-                };
-                timer.Tick += (_, _) =>
-                {
-                    timer.Stop();
-                    OpenSettings();
-                };
-                timer.Start();
+                OpenSettings();
+                Log("OpenSettings returned");
             }
-            else
+            catch (Exception ex)
             {
-                Dispatcher.BeginInvoke(new Action(OpenSettings),
-                    System.Windows.Threading.DispatcherPriority.Background);
+                Log("open settings failed: " + ex);
             }
         };
 
@@ -352,12 +426,24 @@ public partial class App : System.Windows.Application
         {
             try
             {
+                // 正在朗读时再点一下就是停止
+                if (_speech is { IsSpeaking: true })
+                {
+                    _speech.Stop();
+                    return;
+                }
+
                 var lang = TranslationService.IsMostlyChinese(text) ? "zh" : "en";
-                await (_speech ??= new SpeechService()).SpeakAsync(text, lang, _config);
+                var speech = _speech ??= new SpeechService();
+                speech.Stopped -= OnSpeechStopped;
+                speech.Stopped += OnSpeechStopped;
+                popup.SetSpeaking(true);
+                await speech.SpeakAsync(text, lang, _config);
             }
             catch (Exception ex)
             {
                 Log("speak failed: " + ex.Message);
+                popup.SetSpeaking(false);
             }
         };
 
@@ -370,6 +456,9 @@ public partial class App : System.Windows.Application
 
         popup.Closed += (_, _) =>
         {
+            // 关闭浮窗就停止朗读，否则声音会一直响
+            try { _speech?.Stop(); } catch { }
+
             if (ReferenceEquals(_popup, popup))
             {
                 _popup = null;
@@ -415,6 +504,9 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // 记录取字来源窗口：前台窗口切走它才启动自动关闭倒计时
+        _popup.SetSourceWindow(TextGrabber.LastSourceHwnd);
+
         // 有选区矩形就把浮窗贴到选中文字旁边，比跟着鼠标准
         var anchor = TextGrabber.LastSelectionRect;
         if (anchor.HasValue && anchor.Value.Width > 4 && anchor.Value.Height > 4)
@@ -433,7 +525,7 @@ public partial class App : System.Windows.Application
         await TranslateTextAsync(text);
     }
 
-    private async Task OpenInputPopupAsync()
+    private void OpenInputPopup()
     {
         if (_popup is { IsVisible: true })
         {
@@ -495,11 +587,25 @@ public partial class App : System.Windows.Application
             }
 
             Log($"translate start -> {target}");
-            await foreach (var piece in TranslationService.TranslateAsync(source, _config, _engine!.BaseUrl, target, ct))
-                _popup.AppendChunk(piece);
+            _popup.StartStreaming();
+
+            // 把翻译数据的接收放到后台线程：await foreach 在后台消费 token，
+            // 只往浮窗的线程安全缓冲区塞文字，不碰任何 UI 控件。
+            // UI 线程由浮窗自己的 DispatcherTimer 每 100ms 刷一次，
+            // 这样鼠标拖动、点击按钮全程零卡顿。
+            await Task.Run(async () =>
+            {
+                await foreach (var piece in TranslationService.TranslateAsync(
+                    source, _config, _engine!.BaseUrl, target, ct))
+                {
+                    _popup.AppendChunk(piece);
+                }
+            }, ct);
 
             Log("translate done");
             _engine?.MarkUsed();
+
+            // 回 UI 线程收尾
             _popup.Finish();
         }
         catch (OperationCanceledException)
@@ -557,8 +663,16 @@ public partial class App : System.Windows.Application
                 }
             }
 
-            await foreach (var piece in TranslationService.TranslateAsync(_currentSource, _config, _engine!.BaseUrl, target, ct))
-                _popup.AppendChunk(piece);
+            _popup.StartStreaming();
+
+            await Task.Run(async () =>
+            {
+                await foreach (var piece in TranslationService.TranslateAsync(
+                    _currentSource, _config, _engine!.BaseUrl, target, ct))
+                {
+                    _popup.AppendChunk(piece);
+                }
+            }, ct);
 
             _engine?.MarkUsed();
             _popup.Finish();
@@ -664,6 +778,111 @@ public partial class App : System.Windows.Application
 
     // ---------- 设置 ----------
 
+    /// <summary>启动后延迟检查新版本，有更新就点亮托盘菜单项。</summary>
+    private async Task CheckUpdateAsync()
+    {
+        try
+        {
+            await Task.Delay(6000);
+
+            var info = await new UpdateService().CheckAsync();
+            if (info == null) return;
+
+            _pendingUpdate = info;
+            if (_updateItem != null)
+            {
+                _updateItem.Text = $"发现新版本 {info.Version}…";
+                _updateItem.Visible = true;
+            }
+
+            try
+            {
+                _tray?.ShowBalloonTip(6000, "QuickTrans 有新版本",
+                    $"当前 {UpdateService.CurrentVersion} → {info.Version}，右键托盘图标可更新。",
+                    WinForms.ToolTipIcon.Info);
+            }
+            catch { /* 气泡提示失败不影响主流程 */ }
+
+            Log($"update available: {UpdateService.CurrentVersion} -> {info.Version}");
+        }
+        catch
+        {
+            // 检查失败静默忽略，不能因为更新检查影响正常使用
+        }
+    }
+
+    /// <summary>打开新版本的下载页。</summary>
+    private void OpenUpdatePage()
+    {
+        var url = _pendingUpdate?.Url;
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            Log("open update page failed: " + ex.Message);
+        }
+    }
+
+    /// <summary>解析安装向导传入的 --install-components=a,b 参数。</summary>
+    private static string[] ParseComponentArg()
+    {
+        const string prefix = "--install-components=";
+        try
+        {
+            foreach (var arg in Environment.GetCommandLineArgs())
+            {
+                if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return arg[prefix.Length..]
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                }
+            }
+        }
+        catch { /* 参数异常按没传处理 */ }
+
+        return Array.Empty<string>();
+    }
+
+    /// <summary>系统里有没有 NVIDIA 显卡（有的话值得引导用户下载 GPU 引擎）。</summary>
+    private static bool HasNvidiaGpu()
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(
+                "nvidia-smi", "--query-gpu=name --format=csv,noheader")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p == null) return false;
+            var output = p.StandardOutput.ReadToEnd();
+            if (!p.WaitForExit(3000))
+            {
+                try { p.Kill(); } catch { }
+                return false;
+            }
+            return !string.IsNullOrWhiteSpace(output);
+        }
+        catch
+        {
+            return false;   // 没装驱动或没有 nvidia-smi
+        }
+    }
+
+    /// <summary>当前引擎目录里有没有 CUDA 后端，即是否已经是 GPU 版。</summary>
+    private static bool HasCudaEngine() =>
+        File.Exists(Path.Combine(AppContext.BaseDirectory, "engine", "ggml-cuda.dll"));
+
     /// <summary>打开组件管理窗口（下载 GPU 引擎、模型）。</summary>
     private void OpenComponentManager()
     {
@@ -679,32 +898,88 @@ public partial class App : System.Windows.Application
 
     private void OpenSettings()
     {
+        Log("OpenSettings enter");
+        // 已经开着就拉到前面，别开第二个
+        if (_settingsWin is { IsVisible: true })
+        {
+            Log("OpenSettings: already open, activate");
+            _settingsWin.Activate();
+            return;
+        }
+
         var oldStyle = _config.TrayIconStyle;
         var oldVariant = _config.EngineVariant;
 
-        var win = new SettingsWindow(_config, _engine!);
-        win.ShowDialog();
-        RegisterHotkeys();
+        var popupTopmost = _popup?.Topmost ?? false;
+        if (_popup != null) _popup.Topmost = false;
 
-        // 换过图标样式就立刻应用，不用重启
-        if (_config.TrayIconStyle != oldStyle && _tray != null)
+        // 打开设置窗口前，把浮窗刷屏降到 500ms：给设置窗口首渲染让出
+        // UI 线程（消除卡顿），同时译文仍在缓慢流动，不会冻结。
+        _popup?.SlowStreaming();
+
+        var win = new SettingsWindow(_config, _engine!)
         {
-            var previous = _tray.Icon;
-            _tray.Icon = CreateTrayIcon(_config.TrayIconStyle);
-            try { previous?.Dispose(); } catch { /* 旧图标可能已被系统引用，忽略 */ }
-        }
+            Owner = null,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            // 设置窗口也 Topmost：浮窗是 Topmost 的，两个都置顶时后 Show 的在上，
+            // 这样设置窗口才能盖住浮窗。关闭时在 Closed 里还原为普通层级。
+            Topmost = true,
+        };
+        _settingsWin = win;
+        Log("OpenSettings: window created");
 
-        // 换了引擎目录：先卸掉当前模型，下次翻译用新引擎重新加载
-        if (!string.Equals(_config.EngineVariant, oldVariant, StringComparison.OrdinalIgnoreCase))
+        win.Closed += (_, _) =>
         {
-            Log($"engine variant -> {_config.EngineVariant}");
-            _engine?.Unload();
-            _engine?.SwitchEngine(_config.EngineVariant);
-            Log($"engine dir now {_engine?.EngineDir}");
-        }
+            _settingsWin = null;
+            win.Topmost = false;   // 关闭后取消置顶，别一直盖着别的程序
 
-        // 自启开关和注册表对齐
-        AutoStartService.Sync(_config.AutoStart);
+            if (_popup != null) _popup.Topmost = popupTopmost;
+            _popup?.ResumeStreaming();   // 恢复浮窗刷屏，补上暂停期间的内容
+            _popup?.SetSettingsWindow(IntPtr.Zero);   // 清空设置页句柄
+            RegisterHotkeys();
+
+            if (_config.TrayIconStyle != oldStyle && _tray != null)
+            {
+                var previous = _tray.Icon;
+                _tray.Icon = CreateTrayIcon(_config.TrayIconStyle);
+                try { previous?.Dispose(); } catch { }
+            }
+
+            if (!string.Equals(_config.EngineVariant, oldVariant, StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"engine variant -> {_config.EngineVariant}");
+                _engine?.Unload();
+                _engine?.SwitchEngine(_config.EngineVariant);
+                Log($"engine dir now {_engine?.EngineDir}");
+            }
+
+            AutoStartService.Sync(_config.AutoStart);
+        };
+
+        win.Show();
+        Log("OpenSettings: shown");
+
+        // 把设置页句柄告诉浮窗：前台切到设置页不算浮窗失焦
+        var settingsHwnd = new System.Windows.Interop.WindowInteropHelper(win).Handle;
+        _popup?.SetSettingsWindow(settingsHwnd);
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                win.Activate();
+                win.Topmost = true;
+                win.Topmost = false;
+                win.Activate();
+            }
+            catch { }
+        }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
+    /// <summary>朗读结束（播放完或手动停止），恢复喇叭按钮状态。</summary>
+    private void OnSpeechStopped()
+    {
+        try { _popup?.SetSpeaking(false); } catch { }
     }
 
     /// <summary>释放所有共享资源，退出和正常清理都走这里，避免遗漏或重复。</summary>

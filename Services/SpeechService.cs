@@ -14,12 +14,16 @@ public sealed class SpeechService : IDisposable
     private SpeechSynthesizer? _synth;
     private MediaPlayer? _player;
 
+    /// <summary>朗读结束（播放完或手动停止）时触发，供界面恢复按钮状态。</summary>
+    public event Action? Stopped;
+
     public bool IsSpeaking => _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
 
     private void EnsurePlayer()
     {
         if (_player != null) return;
         _player = new MediaPlayer { AudioCategory = MediaPlayerAudioCategory.Speech };
+        _player.MediaEnded += (_, _) => Stopped?.Invoke();
     }
 
     /// <summary>
@@ -61,7 +65,15 @@ public sealed class SpeechService : IDisposable
 
     public void Stop()
     {
-        try { _player?.Pause(); } catch { /* 播放器还没创建 */ }
+        try
+        {
+            _player?.Pause();
+            // 清掉源，彻底停止：只 Pause 的话下次 Play 会从暂停点继续，
+            // 而且关闭窗口后 MediaPlayer 可能还在后台持有音频资源。
+            if (_player != null) _player.Source = null;
+            Stopped?.Invoke();
+        }
+        catch { /* 播放器还没创建 */ }
     }
 
     /// <summary>系统里的全部语音，供设置页按语言分组展示。</summary>

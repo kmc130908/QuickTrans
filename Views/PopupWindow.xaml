@@ -82,13 +82,8 @@
                 </Grid>
             </Border>
 
-            <ScrollViewer x:Name="ResultScroll" MaxHeight="380" Margin="0,11,0,0"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled">
-                <TextBlock x:Name="ResultText" Text="" FontSize="16" Foreground="#1A1A1E"
-                           TextWrapping="Wrap" LineHeight="25" />
-            </ScrollViewer>
-
+            <!-- 操作栏：放在原文和译文之间，位置固定。
+                 译文不管多长都在它下方增长，按钮不会被挤走。 -->
             <Grid Margin="0,10,0,0" x:Name="FooterPanel" Visibility="Collapsed">
                 <StackPanel x:Name="LangPanel" Orientation="Horizontal" HorizontalAlignment="Left"
                             VerticalAlignment="Center" />
@@ -104,6 +99,13 @@
                             Margin="6,0,0,0" ToolTip="打开设置" Click="OnSettingsClick" />
                 </StackPanel>
             </Grid>
+
+            <ScrollViewer x:Name="ResultScroll" MaxHeight="380" Margin="0,11,0,0"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <TextBlock x:Name="ResultText" Text="" FontSize="16" Foreground="#1A1A1E"
+                           TextWrapping="Wrap" LineHeight="25" />
+            </ScrollViewer>
 
             <Border x:Name="LangEditPanel" Visibility="Collapsed" Background="#F6F6F8"
                     CornerRadius="6" Padding="11,9" Margin="0,10,0,0">

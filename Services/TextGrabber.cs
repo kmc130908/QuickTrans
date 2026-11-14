@@ -100,6 +100,9 @@ public static class TextGrabber
     /// <summary>选中文字在屏幕上的矩形（物理像素）。拿不到时为 null。</summary>
     public static Int32Rect? LastSelectionRect { get; private set; }
 
+    /// <summary>取字时的来源窗口句柄（前台窗口）。用于浮窗只对它置顶。</summary>
+    public static IntPtr LastSourceHwnd { get; private set; }
+
     /// <summary>控制台类窗口，Ctrl+C 会触发中断，必须排除。</summary>
     private static readonly string[] ConsoleClasses =
     {
@@ -114,6 +117,7 @@ public static class TextGrabber
     {
         mode ??= "auto";
         LastSelectionRect = null;
+        LastSourceHwnd = GetForegroundWindow();
 
         if (!string.Equals(mode, "clipboard", StringComparison.OrdinalIgnoreCase))
         {

@@ -27,6 +27,27 @@ public partial class ComponentWindow : Window
         BuildList();
     }
 
+    /// <summary>
+    /// 安装向导里勾选了「下载 GPU 引擎 / 模型」时，由 App 带参数启动本窗口，
+    /// 构造时传入组件 id，窗口显示后自动开始下载。
+    /// </summary>
+    public ComponentWindow(ComponentManager manager, string[] autoStartIds) : this(manager)
+    {
+        if (autoStartIds.Length == 0) return;
+
+        Loaded += async (_, _) =>
+        {
+            foreach (var id in autoStartIds)
+            {
+                var item = _manifest.Components.FirstOrDefault(c =>
+                    string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase));
+                if (item == null || _manager.IsInstalled(item)) continue;
+
+                await ToggleAsync(item);
+            }
+        };
+    }
+
     private void BuildList()
     {
         ListPanel.Children.Clear();

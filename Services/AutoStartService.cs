@@ -41,8 +41,9 @@ public static class AutoStartService
                 var exePath = Environment.ProcessPath;
                 if (string.IsNullOrWhiteSpace(exePath)) return false;
 
-                // 路径带空格必须加引号，否则 Windows 会把前半截当程序名
-                key.SetValue(ValueName, $"\"{exePath}\"");
+                // 路径带空格必须加引号，否则 Windows 会把前半截当程序名。
+                // --autostart 用来区分"开机自启"和"用户手动双击"——手动的要弹设置页。
+                key.SetValue(ValueName, $"\"{exePath}\" --autostart");
             }
             else
             {
@@ -62,5 +63,19 @@ public static class AutoStartService
     {
         if (desired == IsEnabled()) return;
         SetEnabled(desired);
+    }
+
+    /// <summary>本次进程是不是由开机自启拉起的。</summary>
+    public static bool IsAutoStartLaunch()
+    {
+        try
+        {
+            return Environment.GetCommandLineArgs()
+                .Any(a => string.Equals(a, "--autostart", StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

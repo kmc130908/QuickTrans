@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -18,6 +19,7 @@ public partial class PopupWindow : Window
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_ASYNCWINDOWPOS = 0x4000;
 
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
@@ -47,22 +49,15 @@ public partial class PopupWindow : Window
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
-    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll")]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    private static extern bool IsWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    private static extern IntPtr GetForegroundWindow();
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr GetModuleHandle(string? lpModuleName);
-
-    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN = 0x0100;
-    private const int VK_ESCAPE = 0x1B;
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X; public int Y; }
@@ -85,23 +80,22 @@ public partial class PopupWindow : Window
     private static readonly Brush IdleLangFg = new SolidColorBrush(Color.FromRgb(0x5A, 0x5A, 0x64));
 
     private readonly DispatcherTimer _autoCloseTimer;
+    private readonly DispatcherTimer _foregroundCheckTimer;
+    private readonly DispatcherTimer _timedCloseTimer;
     private bool _hasResult;
     private bool _positioned;
     private bool _inputMode;
 
-    private bool _dragging;
-    private int _dragScreenX;
-    private int _dragScreenY;
-    private int _dragRectLeft;
-    private int _dragRectTop;
+    /// <summary>取字来源窗口句柄：前台窗口切走它就启动自动关闭倒计时。</summary>
+    private IntPtr _sourceHwnd = IntPtr.Zero;
+
+    /// <summary>设置页窗口句柄：前台切到设置页不算失焦。</summary>
+    private IntPtr _settingsHwnd = IntPtr.Zero;
+
     private bool _userMoved;
 
     /// <summary>选中文字的屏幕矩形，有值就贴着它显示，否则跟随鼠标。</summary>
     private Int32Rect? _anchorRect;
-
-    private static PopupWindow? _current;
-    private static IntPtr _hookHandle = IntPtr.Zero;
-    private static LowLevelKeyboardProc? _hookProc;
 
     private static readonly string[] AllLanguages =
     {
@@ -134,20 +128,66 @@ public partial class PopupWindow : Window
     /// <summary>当前译文文本，供朗读使用。</summary>
     public string CurrentResult => ResultText.Text;
 
+    /// <summary>浮窗失去焦点后是否自动关闭，由设置页控制。</summary>
+    public static bool AutoCloseEnabled { get; set; } = true;
+
+    /// <summary>自动关闭前等待的秒数。0 表示切走立即关闭。</summary>
+    public static int AutoCloseSeconds { get; set; } = 5;
+
+    /// <summary>切走后鼠标停在浮窗上是否暂停倒计时。</summary>
+    public static bool AutoClosePauseOnHover { get; set; } = true;
+
+    /// <summary>定时自动关闭是否开启（不管切不切窗口，到时自动关）。</summary>
+    public static bool TimedCloseEnabled { get; set; } = false;
+
+    /// <summary>定时自动关闭的秒数。</summary>
+    public static int TimedCloseSeconds { get; set; } = 30;
+
     public PopupWindow()
     {
         InitializeComponent();
 
-        _autoCloseTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _autoCloseTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(Math.Max(0, AutoCloseSeconds)),
+        };
         _autoCloseTimer.Tick += (_, _) =>
         {
             _autoCloseTimer.Stop();
-            if (IsMouseOver || _inputMode) return;
+
+            // 用户关掉了自动消失：计时到点也不关
+            if (!AutoCloseEnabled) return;
+            if (_inputMode) return;
+            // 鼠标悬停暂停：按设置决定，勾选才暂停
+            if (IsMouseOver && AutoClosePauseOnHover) return;
+            Close();
+        };
+
+        // 前台窗口检测：每 300ms 看前台窗口是否还是取字来源窗口。
+        // 只有切到别的窗口（前台离开来源窗口）才启动自动关闭倒计时。
+        // 继续操作来源窗口（滚动/点击）不算失焦，浮窗一直保留。
+        _foregroundCheckTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(300),
+        };
+        _foregroundCheckTimer.Tick += (_, _) => CheckForeground();
+        _foregroundCheckTimer.Start();
+
+        // 定时自动关闭：翻译完成后倒计时，到点自动关（不管切不切窗口、
+        // 鼠标在不在浮窗上）。切走窗口时由切走关闭规则接管（更快触发）。
+        _timedCloseTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(Math.Max(1, TimedCloseSeconds)),
+        };
+        _timedCloseTimer.Tick += (_, _) =>
+        {
+            _timedCloseTimer.Stop();
+            if (!TimedCloseEnabled) return;
+            if (_inputMode) return;
             Close();
         };
 
         MouseEnter += (_, _) => _autoCloseTimer.Stop();
-        MouseLeave += (_, _) => { if (!_inputMode) _autoCloseTimer.Start(); };
 
         SourceInitialized += OnSourceInitialized;
         Loaded += (_, _) => { Reposition(true); _positioned = true; };
@@ -155,14 +195,14 @@ public partial class PopupWindow : Window
         Closed += (_, _) =>
         {
             _autoCloseTimer.Stop();
-            UninstallEscHook();
-            if (ReferenceEquals(_current, this)) _current = null;
+            _foregroundCheckTimer.Stop();
+            _timedCloseTimer.Stop();
         };
 
-        // 拖动：按在非控件区域时整体移动窗口
-        MouseLeftButtonDown += OnDragStart;
-        MouseMove += OnDragMove;
-        MouseLeftButtonUp += OnDragEnd;
+        // 拖动用 AddHandler + handledEventsToo:true 注册：
+        // ScrollViewer（译文装在它里面）会把 MouseLeftButtonDown 标记为已处理，
+        // 普通 += 收不到，表现就是点译文区域拖不动。handledEventsToo 强制接收。
+        AddHandler(Mouse.MouseDownEvent, new MouseButtonEventHandler(OnDragStart), true);
     }
 
     private void OnDragStart(object sender, MouseButtonEventArgs e)
@@ -170,64 +210,58 @@ public partial class PopupWindow : Window
         if (e.ChangedButton != MouseButton.Left) return;
         if (IsInteractive(e.OriginalSource as DependencyObject)) return;
 
-        _dragging = true;
+        App.Log($"drag start: src={e.OriginalSource?.GetType().Name}");
         _userMoved = true;
-
-        // 全程用物理像素：GetCursorPos 取鼠标、GetWindowRect 取窗口，
-        // 拖动时直接 SetWindowPos，不经过 WPF 的 DIP 换算，避免缩放导致的偏移
-        GetCursorPos(out var pt);
-        _dragScreenX = pt.X;
-        _dragScreenY = pt.Y;
-
-        var hwnd = new WindowInteropHelper(this).Handle;
-        if (GetWindowRect(hwnd, out var rect))
-        {
-            _dragRectLeft = rect.Left;
-            _dragRectTop = rect.Top;
-        }
-        else
-        {
-            _dragging = false;
-            return;
-        }
-
-        CaptureMouse();
         Cursor = Cursors.SizeAll;
+
+        try
+        {
+            DragMove();
+        }
+        catch (InvalidOperationException)
+        {
+            App.Log("drag: DragMove threw InvalidOperation");
+        }
+        catch (Exception ex)
+        {
+            App.Log("drag: DragMove threw " + ex.GetType().Name + ": " + ex.Message);
+        }
+        finally
+        {
+            Cursor = Cursors.Arrow;
+            FlushPending(force: true);
+        }
+
         e.Handled = true;
-    }
-
-    private void OnDragMove(object sender, MouseEventArgs e)
-    {
-        if (!_dragging) return;
-
-        GetCursorPos(out var pt);
-        var hwnd = new WindowInteropHelper(this).Handle;
-
-        SetWindowPos(hwnd, IntPtr.Zero,
-            _dragRectLeft + (pt.X - _dragScreenX),
-            _dragRectTop + (pt.Y - _dragScreenY),
-            0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    }
-
-    private void OnDragEnd(object sender, MouseButtonEventArgs e)
-    {
-        if (!_dragging) return;
-        _dragging = false;
-        ReleaseMouseCapture();
-        Cursor = Cursors.Arrow;
     }
 
     /// <summary>点到按钮、输入框、滚动条时不算拖动。</summary>
     private static bool IsInteractive(DependencyObject? obj)
     {
-        while (obj != null)
+        var guard = 0;
+
+        while (obj != null && guard++ < 32)
         {
             if (obj is System.Windows.Controls.Primitives.ButtonBase) return true;
             if (obj is TextBox) return true;
             if (obj is System.Windows.Controls.Primitives.ScrollBar) return true;
-            if (obj is ScrollViewer) return true;
-            obj = VisualTreeHelper.GetParent(obj);
+
+            // 译文是逐块 Inlines.Add 进去的，点在文字上时 OriginalSource 是 Run。
+            // Run 属于 ContentElement 不是 Visual，直接丢给 VisualTreeHelper
+            // 会抛 InvalidOperationException，整个拖动流程就断了——表现就是
+            // 翻译出文字后按哪儿都拖不动。
+            try
+            {
+                obj = obj is System.Windows.Media.Visual
+                    ? VisualTreeHelper.GetParent(obj)
+                    : LogicalTreeHelper.GetParent(obj);
+            }
+            catch
+            {
+                return false;
+            }
         }
+
         return false;
     }
 
@@ -237,51 +271,127 @@ public partial class PopupWindow : Window
         var ex = GetWindowLong(hwnd, GWL_EXSTYLE);
         // 关键：不抢焦点，否则目标窗口的选区会立刻消失
         SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
-
-        InstallEscHook();
     }
 
-    /// <summary>装一个低级键盘钩子，让窗口即使没有焦点也能用 Esc 关闭。</summary>
-    private void InstallEscHook()
+    /// <summary>记录取字来源窗口句柄，前台窗口切走它才启动自动关闭。</summary>
+    public void SetSourceWindow(IntPtr sourceHwnd)
     {
-        if (_hookHandle != IntPtr.Zero) return;
-
-        _current = this;
-        _hookProc = HookProc;
-        _hookHandle = SetWindowsHookEx(WH_KEYBOARD_LL, _hookProc, GetModuleHandle(null), 0);
+        _sourceHwnd = sourceHwnd;
+        App.Log($"source window set: {sourceHwnd}");
     }
 
-    private static void UninstallEscHook()
-    {
-        if (_hookHandle == IntPtr.Zero) return;
+    /// <summary>设置页窗口句柄：前台切到设置页不算失焦。</summary>
+    public void SetSettingsWindow(IntPtr settingsHwnd) => _settingsHwnd = settingsHwnd;
 
-        UnhookWindowsHookEx(_hookHandle);
-        _hookHandle = IntPtr.Zero;
-        _hookProc = null;
+    /// <summary>
+    /// 启动定时自动关闭（不管切不切窗口，到时自动关）。
+    /// 翻译开始时调用。悬停时暂停计时，移开继续。
+    /// </summary>
+    public void StartTimedClose()
+    {
+        if (!TimedCloseEnabled) return;
+
+        _timedCloseTimer.Interval = TimeSpan.FromSeconds(Math.Max(1, TimedCloseSeconds));
+        _timedCloseTimer.Stop();
+        _timedCloseTimer.Start();
     }
 
-    private static IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
+    /// <summary>
+    /// 检测前台窗口是否还是取字来源窗口。
+    /// - 前台还是来源窗口（或设置页、或浮窗自身）→ 不算失焦，停倒计时，浮窗保留
+    /// - 前台切到别的窗口 → 启动自动关闭倒计时（0 秒即立刻关）
+    /// - 来源窗口被关闭 → 立即关闭浮窗
+    /// </summary>
+    private bool _lostFocusOnce;
+
+    private void CheckForeground()
     {
-        if (nCode >= 0 && wParam == (IntPtr)WM_KEYDOWN)
+        // 手动输入模式不自动关闭（用户要在别的窗口打字）
+        if (_inputMode)
         {
-            var vk = Marshal.ReadInt32(lParam);
-            if (vk == VK_ESCAPE)
-            {
-                var target = _current;
-                if (target != null)
-                {
-                    target.Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        try { target.Close(); } catch { /* 窗口可能已经关了 */ }
-                    }));
-
-                    // 吞掉这次 Esc，避免同时触发别的程序
-                    return (IntPtr)1;
-                }
-            }
+            _autoCloseTimer.Stop();
+            _lostFocusOnce = false;
+            return;
         }
 
-        return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+        // 没有记录到来源窗口（取词时前台窗口没拿到）→ 不启用自动关闭
+        if (_sourceHwnd == IntPtr.Zero)
+        {
+            _autoCloseTimer.Stop();
+            _lostFocusOnce = false;
+            return;
+        }
+
+        // 来源窗口已经不存在（被关闭）→ 立即关浮窗
+        if (!IsWindow(_sourceHwnd))
+        {
+            App.Log($"source window closed: {_sourceHwnd} -> close popup");
+            try { Close(); } catch { }
+            return;
+        }
+
+        var fg = GetForegroundWindow();
+
+        // 前台还是来源窗口 → 没失焦
+        if (fg == _sourceHwnd)
+        {
+            _autoCloseTimer.Stop();
+            _lostFocusOnce = false;
+            return;
+        }
+
+        // 前台是设置页 → 不算失焦
+        if (_settingsHwnd != IntPtr.Zero && fg == _settingsHwnd)
+        {
+            _autoCloseTimer.Stop();
+            _lostFocusOnce = false;
+            return;
+        }
+
+        // 前台是浮窗自身 → 不算失焦
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (fg == hwnd)
+        {
+            _autoCloseTimer.Stop();
+            _lostFocusOnce = false;
+            return;
+        }
+
+        // 鼠标在浮窗上：按设置决定是否暂停倒计时。
+        // 但 0 秒（切走立即关）时强制忽略悬停暂停——0 秒就是严格立即关。
+        if (AutoCloseSeconds > 0 && IsMouseOver && AutoClosePauseOnHover)
+        {
+            _autoCloseTimer.Stop();
+            _lostFocusOnce = false;
+            return;
+        }
+
+        // 前台切到了别的窗口 → 失焦。
+        App.Log($"fg!=source: fg={fg} source={_sourceHwnd} hover={IsMouseOver}");
+
+        // 防抖：连续两次检测到切走才确认，避免前台窗口瞬时抖动
+        if (!_lostFocusOnce)
+        {
+            _lostFocusOnce = true;
+            return;
+        }
+
+        if (!AutoCloseEnabled) return;
+
+        if (AutoCloseSeconds <= 0)
+        {
+            // 0 秒 = 确认切走后立即关闭
+            App.Log("close: 0s immediate");
+            try { Close(); } catch { }
+            return;
+        }
+
+        // 只在定时器未运行时才设置 Interval 并启动（避免反复重置倒计时）
+        if (!_autoCloseTimer.IsEnabled)
+        {
+            _autoCloseTimer.Interval = TimeSpan.FromSeconds(Math.Max(0, AutoCloseSeconds));
+            _autoCloseTimer.Start();
+        }
     }
 
     /// <summary>
@@ -519,17 +629,99 @@ public partial class PopupWindow : Window
         if (!_inputMode) _autoCloseTimer.Stop();
     }
 
+    private readonly StringBuilder _pendingText = new();
+    private readonly object _pendingLock = new();
+    private System.Windows.Threading.DispatcherTimer? _renderTimer;
+
+    /// <summary>
+    /// 流式追加。**在后台线程调用**：只把内容塞进线程安全缓冲区，不碰任何 UI 控件。
+    /// 真正刷新交给 UI 线程的 DispatcherTimer（每 100ms 一拍）做，
+    /// 这样翻译数据的接收完全不影响 UI 线程——鼠标拖动、点击零卡顿。
+    /// </summary>
     public void AppendChunk(string piece)
     {
         // Hy-MT2 偶尔把换行输出成字面量 /nt/n，顺手清掉
         piece = piece.Replace("/nt/n", "\n").Replace("/n", "\n");
-        ResultText.Text += piece;
+        if (piece.Length == 0) return;
+
+        lock (_pendingLock)
+        {
+            _pendingText.Append(piece);
+        }
         _hasResult = true;
-        ResultScroll.ScrollToEnd();
+    }
+
+    /// <summary>开始/重启渲染定时器。翻译开始时调用，UI 线程每 100ms 拉一次数据刷屏。</summary>
+    public void StartStreaming()
+    {
+        if (_renderTimer == null)
+        {
+            _renderTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(100),
+            };
+            _renderTimer.Tick += (_, _) => FlushPending();
+        }
+        _renderTimer.Stop();
+        _renderTimer.Start();
+    }
+
+    /// <summary>
+    /// 设置窗口打开时调用：把刷屏频率从 100ms 降到 500ms。
+    /// 不是完全暂停——那样译文会"冻结"到设置关闭。降低频率既能把 UI 线程
+    /// 让给设置窗口的首渲染（消除卡顿），又让译文继续缓慢流动。
+    /// </summary>
+    public void SlowStreaming()
+    {
+        if (_renderTimer != null) _renderTimer.Interval = TimeSpan.FromMilliseconds(500);
+    }
+
+    /// <summary>恢复流式刷屏到 100ms，并把积压内容补上。</summary>
+    public void ResumeStreaming()
+    {
+        FlushPending(force: true);
+        if (_renderTimer != null) _renderTimer.Interval = TimeSpan.FromMilliseconds(100);
+        _renderTimer?.Start();
+    }
+
+    /// <summary>把缓冲区内容写进界面。force 用于拖动结束/翻译结束时强制刷新。</summary>
+    private void FlushPending(bool force = false)
+    {
+        // 翻译现在在后台线程，UI 线程空闲。拖动（DragMove 阻塞）期间
+        // 也照常刷屏——不再用 _dragging 拦，否则拖动时译文动画会暂停，
+        // 松开才一次性补上。
+        string? s = null;
+        lock (_pendingLock)
+        {
+            if (_pendingText.Length > 0)
+            {
+                s = _pendingText.ToString();
+                _pendingText.Clear();
+            }
+        }
+
+        if (string.IsNullOrEmpty(s)) return;
+
+        // 用 Inlines.Add 增量追加，而不是 ResultText.Text += s：
+        // Text += 每次都对整段译文做全量重排，译文越长越卡，流式动画掉帧。
+        // Inlines.Add 只排版新增的 Run，WPF 增量更新，动画顺滑。
+        ResultText.Inlines.Add(new System.Windows.Documents.Run(s));
+
+        // 只在译文确实超出可视区时才滚到底，避免每次 flush 都触发
+        // ScrollToEnd 的布局测量，减少掉帧。
+        if (ResultScroll.ExtentHeight > ResultScroll.ViewportHeight + 4)
+            ResultScroll.ScrollToEnd();
     }
 
     public void Finish()
     {
+        // 翻译完成后才启动定时自动关闭（如果开启了）
+        StartTimedClose();
+
+        // 停止渲染定时器，把缓冲区剩余内容一次性刷出来
+        _renderTimer?.Stop();
+        FlushPending(force: true);
+
         // 通用模型（Qwen3 等）偶尔把指令复述成开头的套话，这里剥掉
         var cleaned = StripPreamble(ResultText.Text);
         if (!string.Equals(cleaned, ResultText.Text, StringComparison.Ordinal))
@@ -540,7 +732,6 @@ public partial class PopupWindow : Window
 
         StatusText.Text = _hasResult ? $"完成 · {ResultText.Text.Length} 字" : "没有返回内容";
         CopyButton.Visibility = _hasResult ? Visibility.Visible : Visibility.Collapsed;
-        if (!_inputMode) _autoCloseTimer.Start();
     }
 
     /// <summary>去掉模型在译文前附加的常见套话。</summary>
@@ -608,6 +799,7 @@ public partial class PopupWindow : Window
 
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
+        App.Log("settings button clicked");
         SettingsRequested?.Invoke();
     }
 
@@ -615,6 +807,14 @@ public partial class PopupWindow : Window
     {
         if (!_hasResult) return;
         SpeakRequested?.Invoke(ResultText.Text);
+    }
+
+    /// <summary>设置喇叭按钮的朗读中状态（App 层朗读开始/停止时回调）。</summary>
+    public void SetSpeaking(bool speaking)
+    {
+        // 朗读中高亮，提示用户再点一下停止
+        SpeakButton.Opacity = speaking ? 1.0 : 0.55;
+        SpeakButton.ToolTip = speaking ? "停止朗读" : "朗读译文";
     }
 
     /// <summary>根据配置决定是否显示喇叭按钮。</summary>

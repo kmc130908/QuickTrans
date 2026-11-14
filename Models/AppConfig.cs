@@ -61,11 +61,32 @@ public sealed class AppConfig
 
     public double PopupWidth { get; set; } = 440;
 
+    /// <summary>切到其它窗口后是否自动关闭浮窗。</summary>
+    public bool PopupAutoClose { get; set; } = true;
+
+    /// <summary>切走窗口后自动关闭前等待的秒数。0 表示切走立即关闭。</summary>
+    public int PopupAutoCloseSeconds { get; set; } = 5;
+
+    /// <summary>切走窗口后，鼠标仍停在浮窗上时是否暂停倒计时（true=悬停暂停，false=严格按秒数关）。</summary>
+    public bool PopupAutoClosePauseOnHover { get; set; } = true;
+
+    /// <summary>定时自动关闭：不管切不切窗口，浮窗显示指定秒数后自动关闭。</summary>
+    public bool PopupTimedCloseEnabled { get; set; } = false;
+
+    /// <summary>定时自动关闭的秒数。</summary>
+    public int PopupTimedCloseSeconds { get; set; } = 30;
+
     /// <summary>托盘图标样式，1-4 对应 assets 里的四套图标。</summary>
     public int TrayIconStyle { get; set; } = 1;
 
     /// <summary>是否已提示过"缺组件去下载"，避免每次启动都弹窗。</summary>
     public bool ComponentHintShown { get; set; }
+
+    /// <summary>手动启动（非开机自启）时是否自动弹出设置页，让用户确认软件已启动。</summary>
+    public bool ShowSettingsOnStartup { get; set; } = true;
+
+    /// <summary>是否已看过首次使用引导。</summary>
+    public bool WelcomeShown { get; set; }
 
     /// <summary>是否随系统启动。</summary>
     public bool AutoStart { get; set; }
