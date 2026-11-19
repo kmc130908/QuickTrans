@@ -14,15 +14,23 @@
     <ApplicationIcon>assets\tray1.ico</ApplicationIcon>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>1.2.0</Version>
+    <Version>2.0.0</Version>
     <Product>QuickTrans</Product>
     <Description>选中即译的桌面划词翻译工具</Description>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(SelfContained)' != 'false'">true</IncludeNativeLibrariesForSelfExtract>
+    <!-- 轻量版（框架依赖）标记：用于区分自更新通道与关于页显示 -->
+    <DefineConstants Condition="'$(SelfContained)' == 'false'">$(DefineConstants);FRAMEWORK_DEPENDENT</DefineConstants>
+    <!-- 发布版不生成独立 pdb，避免打包带出调试符号 -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
+    <!-- 不压缩单文件：压缩后每次启动都要把用到的程序集解压到私有内存里，
+         实测空闲时私有内存 127MB → 51MB、工作集 243MB → 113MB。
+         exe 会变大（69MB → 164MB），但安装包用 LZMA2 压缩，反而更小（约 -20MB）。 -->
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <!-- WinForms 只为托盘图标而引入，去掉它的隐式 using，避免和 WPF 同名类型冲突 -->

@@ -15,6 +15,9 @@ public static class TranslationService
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(3) };
 
+    /// <summary>百度/有道/谷歌这类一次性返回的接口的单次请求超时。</summary>
+    private static readonly TimeSpan OnlineTimeout = TimeSpan.FromSeconds(20);
+
     private static string MapLanguage(string name) => name switch
     {
         "简体中文" => "Simplified Chinese",
@@ -171,11 +174,13 @@ public static class TranslationService
             ["sign"] = sign,
         };
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        // 复用共享的 HttpClient（每次 new 会留下一批 Socket/连接池对象），超时改成按请求控制
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(OnlineTimeout);
         using var content = new FormUrlEncodedContent(form);
-        var json = await (await http.PostAsync(
-                "https://fanyi-api.baidu.com/api/trans/vip/translate", content, ct))
-            .Content.ReadAsStringAsync(ct);
+        var json = await (await Http.PostAsync(
+                "https://fanyi-api.baidu.com/api/trans/vip/translate", content, timeout.Token))
+            .Content.ReadAsStringAsync(timeout.Token);
 
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -243,10 +248,11 @@ public static class TranslationService
             ["curtime"] = curtime,
         };
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(OnlineTimeout);
         using var content = new FormUrlEncodedContent(form);
-        var json = await (await http.PostAsync("https://openapi.youdao.com/api", content, ct))
-            .Content.ReadAsStringAsync(ct);
+        var json = await (await Http.PostAsync("https://openapi.youdao.com/api", content, timeout.Token))
+            .Content.ReadAsStringAsync(timeout.Token);
 
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -289,8 +295,9 @@ public static class TranslationService
                   $"?client=gtx&sl=auto&tl={MapGoogleLang(target)}&dt=t" +
                   $"&q={Uri.EscapeDataString(text)}";
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        var json = await http.GetStringAsync(url, ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(OnlineTimeout);
+        var json = await Http.GetStringAsync(url, timeout.Token);
 
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;

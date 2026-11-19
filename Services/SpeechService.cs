@@ -13,17 +13,44 @@ public sealed class SpeechService : IDisposable
 {
     private SpeechSynthesizer? _synth;
     private MediaPlayer? _player;
+    private MediaSource? _source;
+    private SpeechSynthesisStream? _stream;
+    private readonly object _gate = new();
 
-    /// <summary>朗读结束（播放完或手动停止）时触发，供界面恢复按钮状态。</summary>
+    // 每次 Stop/新的朗读都会递增。合成是异步的，合成期间用户点了停止或关了浮窗，
+    // 合成回来后要能识别出“这次朗读已作废”，不能再开始播放。
+    private int _version;
+    private volatile bool _synthesizing;
+
+    /// <summary>朗读结束（播放完或手动停止）时触发，供界面恢复按钮状态。可能在非 UI 线程触发。</summary>
     public event Action? Stopped;
 
-    public bool IsSpeaking => _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+    public bool IsSpeaking =>
+        _synthesizing || _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
 
     private void EnsurePlayer()
     {
         if (_player != null) return;
         _player = new MediaPlayer { AudioCategory = MediaPlayerAudioCategory.Speech };
-        _player.MediaEnded += (_, _) => Stopped?.Invoke();
+        _player.MediaEnded += (_, _) =>
+        {
+            // 播放完立刻释放音频流，别等到下次朗读；放到线程池里做，避免在播放器自己的回调里改 Source
+            var v = _version;
+            Task.Run(() =>
+            {
+                if (v != _version) return;   // 期间已经开始了新的朗读，不要动它的资源
+                ReleaseMedia();
+                Stopped?.Invoke();
+            });
+        };
+        _player.MediaFailed += (_, _) =>
+        {
+            Task.Run(() =>
+            {
+                ReleaseMedia();
+                Stopped?.Invoke();
+            });
+        };
     }
 
     /// <summary>
@@ -31,9 +58,14 @@ public sealed class SpeechService : IDisposable
     /// </summary>
     public async Task SpeakAsync(string text, string lang, AppConfig cfg, CancellationToken ct = default)
     {
-        Stop();
+        // 这里的停止只是为新朗读腾位置，不通知界面——否则刚点亮的喇叭按钮会被立刻熄灭
+        var version = StopCore();
 
-        if (string.IsNullOrWhiteSpace(text)) return;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            Stopped?.Invoke();
+            return;
+        }
 
         _synth ??= new SpeechSynthesizer();
 
@@ -56,26 +88,67 @@ public sealed class SpeechService : IDisposable
         // SpeakingRate：1.0 是常速，范围约 0.5–3.0
         _synth.Options.SpeakingRate = Math.Clamp(1.0 + cfg.TtsRatePercent / 100.0, 0.5, 3.0);
 
-        var stream = await _synth.SynthesizeTextToStreamAsync(text);
+        SpeechSynthesisStream stream;
+        _synthesizing = true;
+        try
+        {
+            stream = await _synth.SynthesizeTextToStreamAsync(text);
+        }
+        finally
+        {
+            _synthesizing = false;
+        }
+
+        // 合成期间被停止（或被新的朗读取代）：丢掉这段音频，不播放
+        if (version != _version)
+        {
+            try { stream.Dispose(); } catch { }
+            return;
+        }
 
         EnsurePlayer();
-        _player!.Source = MediaSource.CreateFromStream(stream, stream.ContentType);
-        _player.Play();
+        lock (_gate)
+        {
+            _stream = stream;
+            _source = MediaSource.CreateFromStream(stream, stream.ContentType);
+            _player!.Source = _source;
+        }
+        _player!.Play();
     }
 
+    /// <summary>停止朗读并通知界面。</summary>
     public void Stop()
     {
+        StopCore();
+        Stopped?.Invoke();
+    }
+
+    /// <summary>停止播放并释放音频资源，返回新的版本号。</summary>
+    private int StopCore()
+    {
+        var v = Interlocked.Increment(ref _version);
         try
         {
             _player?.Pause();
             // 清掉源，彻底停止：只 Pause 的话下次 Play 会从暂停点继续，
             // 而且关闭窗口后 MediaPlayer 可能还在后台持有音频资源。
-            if (_player != null) _player.Source = null;
-            Stopped?.Invoke();
+            ReleaseMedia();
         }
         catch { /* 播放器还没创建 */ }
+        return v;
     }
 
+    private void ReleaseMedia()
+    {
+        lock (_gate)
+        {
+            try { if (_player != null) _player.Source = null; } catch { }
+            try { _source?.Dispose(); } catch { }
+            try { _stream?.Dispose(); } catch { }
+            _source = null;
+            _stream = null;
+        }
+    }
     /// <summary>系统里的全部语音，供设置页按语言分组展示。</summary>
     public static IReadOnlyList<(string Name, string Language)> GetSystemVoices() =>
         SpeechSynthesizer.AllVoices
@@ -86,6 +159,8 @@ public sealed class SpeechService : IDisposable
 
     public void Dispose()
     {
+        Interlocked.Increment(ref _version);
+        ReleaseMedia();
         try { _player?.Dispose(); } catch { }
         try { _synth?.Dispose(); } catch { }
         _player = null;

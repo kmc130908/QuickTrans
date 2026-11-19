@@ -83,6 +83,7 @@ public partial class PopupWindow : Window
     private readonly DispatcherTimer _foregroundCheckTimer;
     private readonly DispatcherTimer _timedCloseTimer;
     private bool _hasResult;
+    private bool _closed;
     private bool _positioned;
     private bool _inputMode;
 
@@ -194,9 +195,26 @@ public partial class PopupWindow : Window
         SizeChanged += (_, _) => { if (_positioned && !_userMoved) Reposition(); };
         Closed += (_, _) =>
         {
+            _closed = true;
             _autoCloseTimer.Stop();
             _foregroundCheckTimer.Stop();
             _timedCloseTimer.Stop();
+
+            // 译文还在流式输出时浮窗被关掉（切走自动关闭、定时关闭、Ctrl+Q、再次截图…）很常见。
+            // 渲染定时器不停的话会一直挂在 Dispatcher 上：每 100ms 空转一次，
+            // 并且让整个已关闭的浮窗（含可视树和译文）无法被回收，关一次漏一个。
+            if (_renderTimer != null)
+            {
+                _renderTimer.Stop();
+                _renderTimer = null;
+            }
+
+            lock (_pendingLock)
+            {
+                _pendingText.Clear();
+                _pendingText.Capacity = 16;
+                _carry = "";
+            }
         };
 
         // 拖动用 AddHandler + handledEventsToo:true 注册：
@@ -640,20 +658,59 @@ public partial class PopupWindow : Window
     /// </summary>
     public void AppendChunk(string piece)
     {
-        // Hy-MT2 偶尔把换行输出成字面量 /nt/n，顺手清掉
-        piece = piece.Replace("/nt/n", "\n").Replace("/n", "\n");
         if (piece.Length == 0) return;
 
         lock (_pendingLock)
         {
-            _pendingText.Append(piece);
+            // Hy-MT2 偶尔把换行输出成字面量 /nt/n。以前直接全局替换 "/n"，
+            // 会把 "yes/no"、"/news"、"and/not" 这类正常文字也破坏掉（变成 yes⏎o）。
+            // 现在只替换后面不跟字母数字的 /n；被切在两个片段中间的 "/n" 先留到下一片段再判断。
+            var text = _carry + piece;
+            _carry = "";
+
+            var hold = TrailingHold(text);
+            if (hold > 0)
+            {
+                _carry = text[^hold..];
+                text = text[..^hold];
+            }
+
+            if (text.Length > 0) _pendingText.Append(FixNewlines(text));
         }
         _hasResult = true;
+    }
+
+    private string _carry = "";
+    private static readonly System.Text.RegularExpressions.Regex NewlineLiteral =
+        new(@"/nt/n|/n(?![A-Za-z0-9_])");
+
+    private static string FixNewlines(string s) =>
+        s.Contains("/n", StringComparison.Ordinal) ? NewlineLiteral.Replace(s, "\n") : s;
+
+    /// <summary>末尾如果是 "/nt/n" 的不完整前缀，返回需要暂存的字符数。</summary>
+    private static int TrailingHold(string s)
+    {
+        if (s.EndsWith("/nt/n", StringComparison.Ordinal)) return 0;   // 已经是完整的，直接替换
+        foreach (var p in new[] { "/nt/", "/nt", "/n", "/" })
+            if (s.EndsWith(p, StringComparison.Ordinal)) return p.Length;
+        return 0;
+    }
+
+    /// <summary>翻译结束：把暂存的末尾字符按“已到结尾”处理后放进缓冲区。</summary>
+    private void FlushCarry()
+    {
+        lock (_pendingLock)
+        {
+            if (_carry.Length == 0) return;
+            _pendingText.Append(FixNewlines(_carry));
+            _carry = "";
+        }
     }
 
     /// <summary>开始/重启渲染定时器。翻译开始时调用，UI 线程每 100ms 拉一次数据刷屏。</summary>
     public void StartStreaming()
     {
+        if (_closed) return;   // 已关闭的浮窗不能再建渲染定时器，否则又会挂在 Dispatcher 上漏掉
         if (_renderTimer == null)
         {
             _renderTimer = new System.Windows.Threading.DispatcherTimer
@@ -720,6 +777,7 @@ public partial class PopupWindow : Window
 
         // 停止渲染定时器，把缓冲区剩余内容一次性刷出来
         _renderTimer?.Stop();
+        FlushCarry();
         FlushPending(force: true);
 
         // 通用模型（Qwen3 等）偶尔把指令复述成开头的套话，这里剥掉

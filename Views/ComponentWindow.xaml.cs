@@ -24,6 +24,23 @@ public partial class ComponentWindow : Window
         InitializeComponent();
         _manager = manager;
         _manifest = DefaultManifest.Create();
+
+        // 根据当前内置引擎调整说明：Vulkan 版已自带三家显卡 GPU 加速，无需再展示 570MB 的 CUDA 引擎下载项
+        var backend = EngineManager.GetGpuBackendKind(_manager.EngineDir);
+        if (string.Equals(backend, "Vulkan", StringComparison.OrdinalIgnoreCase))
+        {
+            HintText.Text = "当前已内置 Vulkan 通用 GPU 引擎（支持 NVIDIA / AMD / Intel 显卡加速并自带 CPU 兜底）。模型体积较大未内置，可按需在下方下载。";
+            _manifest.Components.RemoveAll(c => string.Equals(c.Id, "engine-cuda", StringComparison.OrdinalIgnoreCase));
+        }
+        else if (string.Equals(backend, "CUDA", StringComparison.OrdinalIgnoreCase))
+        {
+            HintText.Text = "当前已内置 CUDA GPU 引擎。翻译模型体积较大未内置，可按需在下方下载。";
+        }
+        else
+        {
+            HintText.Text = "安装包默认只带精简 CPU 引擎。模型和 GPU 引擎体积较大，可按需在下方下载。";
+        }
+
         BuildList();
     }
 

@@ -159,16 +159,19 @@
                             <TextBlock Text="引擎版本" FontSize="12.5" VerticalAlignment="Center" />
                             <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="EngineVariantBox" Width="240" Margin="14,0,0,0"
                                       VerticalAlignment="Center" SelectionChanged="OnEngineVariantChanged">
-                                <ComboBoxItem Content="GPU 版（含 CUDA，可选 CPU/GPU）" />
-                                <ComboBoxItem Content="CPU 版（精简 62MB，只能 CPU）" />
+                                <ComboBoxItem Content="GPU 版（CUDA / Vulkan，可选 CPU/GPU）" />
+                                <ComboBoxItem Content="CPU 版（精简 45MB，只能 CPU）" />
                             </ComboBox>
                         </StackPanel>
 
                         <TextBlock x:Name="EngineVariantHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="改引擎版本会卸载当前模型，下次翻译用新引擎重新加载。CPU 版没有 CUDA 组件，只能跑 CPU。" />
+                                   Text="改引擎版本会卸载当前模型，下次翻译用新引擎重新加载。CPU 版没有 GPU 后端，只能跑 CPU。" />
 
                         <CheckBox x:Name="AutoStartBox" Content="开机自动启动（随系统登录运行）"
-                                  FontSize="12.5" Margin="0,14,0,0" />
+                                  FontSize="12.5" Margin="0,14,0,8" />
+
+                        <CheckBox x:Name="PrewarmModelBox" Content="启动软件时预加载本地模型（关闭可降低待机内存占用）"
+                                  FontSize="12.5" Margin="0,0,0,10" />
 
                         <RadioButton x:Name="KeepLoadedRadio" GroupName="unload" FontSize="12.5"
                                      Content="一直保留在显存 / CPU 内存里（响应最快）" Margin="0,0,0,8" />
@@ -261,7 +264,7 @@
                                     <TextBlock Text="秒后自动关闭" FontSize="12" VerticalAlignment="Center" />
                                 </StackPanel>
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
-                                           Text="翻译完成后开始计时，无论是否切走窗口，到时间自动关闭。鼠标停在浮窗上时暂停计时。" />
+                                           Text="翻译完成后开始计时，无论是否切走窗口，到时间自动关闭。" />
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -389,10 +392,16 @@
                         <CheckBox x:Name="ShowSettingsOnStartupBox" FontSize="12.5" Margin="0,0,0,12"
                                   Content="手动启动软件时自动打开设置页" />
 
-                        <Button Content="管理组件（引擎 / 模型）…" HorizontalAlignment="Left"
-                                Padding="14,5" FontSize="12" Cursor="Hand"
-                                Click="OnOpenComponentsClick"
-                                Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="管理组件（引擎 / 模型）…" HorizontalAlignment="Left"
+                                    Padding="14,5" FontSize="12" Cursor="Hand"
+                                    Click="OnOpenComponentsClick"
+                                    Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
+                            <Button Content="查看使用引导" HorizontalAlignment="Left"
+                                    Padding="14,5" FontSize="12" Cursor="Hand" Margin="10,0,0,0"
+                                    Click="OnOpenWelcomeClick"
+                                    Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 
@@ -468,7 +477,7 @@
                         </ItemsControl>
 
                         <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
-                                   Text="勾选的语言会出现在浮窗底部，点击即可切换并重新翻译当前文本。建议选 3–5 个。" />
+                                   Text="勾选的语言会出现在浮窗操作栏，点击即可切换并重新翻译当前文本。建议选 3–5 个。" />
                     </StackPanel>
                 </Border>
 

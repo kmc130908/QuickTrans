@@ -25,6 +25,12 @@ public sealed class EngineManager : IDisposable
     private Process? _proc;
     private int _port = 8771;
 
+    // 同一时刻只允许一个加载流程：预热、热键翻译、设置页“使用”可能同时触发加载，
+    // 没有这把锁时后来者会看到“进程已启动”就误以为模型已就绪，直接请求导致失败。
+    private readonly SemaphoreSlim _loadGate = new(1, 1);
+    private volatile bool _loading;
+    private volatile bool _ready;
+
     public string BaseDir { get; }
     public string ModelsDir { get; }
     public string EngineDir { get; private set; }
@@ -33,6 +39,9 @@ public sealed class EngineManager : IDisposable
     public string? LastError { get; private set; }
     public bool IsRunning => _proc is { HasExited: false };
 
+    /// <summary>进程已起来并且健康检查通过，可以直接发请求。</summary>
+    public bool IsReady => _ready && IsRunning;
+
     /// <summary>最后一次被使用的时间，供闲置卸载策略判断。</summary>
     public DateTime? LastUsedAt { get; private set; }
 
@@ -40,7 +49,7 @@ public sealed class EngineManager : IDisposable
     public void MarkUsed() => LastUsedAt = DateTime.Now;
 
     /// <summary>闲置时长，未加载时返回 null。</summary>
-    public TimeSpan? IdleFor => IsRunning && LastUsedAt.HasValue
+    public TimeSpan? IdleFor => IsRunning && !_loading && LastUsedAt.HasValue
         ? DateTime.Now - LastUsedAt.Value
         : null;
     public int Port => _port;
@@ -139,17 +148,63 @@ public sealed class EngineManager : IDisposable
 
     private bool? _supportsGpuCache;
 
-    /// <summary>当前引擎目录是否具备 GPU 推理能力（有 CUDA 后端且检测到设备）。</summary>
+    /// <summary>当前引擎目录是否具备 GPU 推理能力（有 GPU 后端且检测到设备）。</summary>
     public bool SupportsGpu => _supportsGpuCache ??= DetectGpu(EngineDir);
 
+    private static readonly Dictionary<string, (long Stamp, bool Ok, string Backend, string Device)> GpuProbeCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly string[] GpuBackendDlls = { "ggml-cuda.dll", "ggml-vulkan.dll", "ggml-rocm.dll" };
+
+    /// <summary>查找引擎目录下的 GPU 后端动态库（CUDA / Vulkan / ROCm），找不到返回 null。</summary>
+    private static string? FindGpuBackendDll(string engineDir)
+    {
+        foreach (var name in GpuBackendDlls)
+        {
+            var path = Path.Combine(engineDir, name);
+            if (File.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    /// <summary>指定引擎目录是否带有 GPU 后端文件（CUDA / Vulkan / ROCm）。</summary>
+    public static bool HasGpuBackend(string engineDir) => FindGpuBackendDll(engineDir) != null;
+
+    /// <summary>返回引擎目录内置的 GPU 后端类型：CUDA / Vulkan / ROCm，纯 CPU 版返回空串。</summary>
+    public static string GetGpuBackendKind(string engineDir)
+    {
+        var dll = FindGpuBackendDll(engineDir);
+        if (dll == null) return "";
+        var name = Path.GetFileName(dll);
+        if (name.Contains("cuda", StringComparison.OrdinalIgnoreCase)) return "CUDA";
+        if (name.Contains("vulkan", StringComparison.OrdinalIgnoreCase)) return "Vulkan";
+        if (name.Contains("rocm", StringComparison.OrdinalIgnoreCase)) return "ROCm";
+        return "GPU";
+    }
+
     /// <summary>检测是否真的能用 GPU，用于界面提示。</summary>
-    public static bool DetectGpu(string engineDir)
+    public static bool DetectGpu(string engineDir) => DetectGpuInfo(engineDir).Ok;
+
+    /// <summary>
+    /// 检测 GPU 能力并返回主设备名称（如 Vulkan / NVIDIA GeForce RTX 4070 Laptop GPU）。
+    /// 结果按“引擎目录 + GPU 后端文件版本”缓存，避免每次打开设置页都拉起 llama-server。
+    /// </summary>
+    public static (bool Ok, string Backend, string DeviceName) DetectGpuInfo(string engineDir)
     {
         try
         {
-            // 先看有没有 CUDA 后端文件，没有就不用费劲起进程了（CPU 版引擎走这条）
-            var cudaBackend = Path.Combine(engineDir, "ggml-cuda.dll");
-            if (!File.Exists(cudaBackend)) return false;
+            // 先看有没有 GPU 后端文件（CUDA/Vulkan/ROCm），没有就不用费劲起进程了（纯 CPU 版走这条）
+            var gpuBackend = FindGpuBackendDll(engineDir);
+            if (gpuBackend == null) return (false, "", "");
+
+            var backendKind = GetGpuBackendKind(engineDir);
+            var fi = new FileInfo(gpuBackend);
+            var stamp = fi.LastWriteTimeUtc.Ticks ^ fi.Length;
+            lock (GpuProbeCache)
+            {
+                if (GpuProbeCache.TryGetValue(engineDir, out var hit) && hit.Stamp == stamp)
+                    return (hit.Ok, hit.Backend, hit.Device);
+            }
 
             var psi = new ProcessStartInfo(Path.Combine(engineDir, "llama-server.exe"), "--list-devices")
             {
@@ -160,24 +215,51 @@ public sealed class EngineManager : IDisposable
                 CreateNoWindow = true,
             };
             using var p = Process.Start(psi);
-            if (p == null) return false;
+            if (p == null) return (false, backendKind, "");
 
             // 先等退出，超时直接杀掉，避免 --list-devices 挂起或异常时留下僵尸进程
             if (!p.WaitForExit(4000))
             {
                 try { p.Kill(entireProcessTree: true); } catch { /* 可能已退出 */ }
-                return false;
+                return (false, backendKind, "");
             }
 
-            var output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-            return output.Contains("CUDA", StringComparison.OrdinalIgnoreCase)
-                || output.Contains("Vulkan", StringComparison.OrdinalIgnoreCase)
-                || output.Contains("ROCm", StringComparison.OrdinalIgnoreCase);
+            var output = p.StandardOutput.ReadToEnd() + "\n" + p.StandardError.ReadToEnd();
+            var device = ParsePrimaryGpuDevice(output, out var detectedBackend);
+            var ok = !string.IsNullOrEmpty(detectedBackend);
+            var finalBackend = ok ? detectedBackend : backendKind;
+
+            lock (GpuProbeCache) GpuProbeCache[engineDir] = (stamp, ok, finalBackend, device);
+            return (ok, finalBackend, device);
         }
         catch
         {
-            return false;
+            return (false, "", "");
         }
+    }
+
+    private static string ParsePrimaryGpuDevice(string output, out string backend)
+    {
+        backend = "";
+        foreach (var raw in output.Split('\n'))
+        {
+            var line = raw.Trim();
+            foreach (var tag in new[] { "CUDA", "Vulkan", "ROCm" })
+            {
+                if (!line.StartsWith(tag, StringComparison.OrdinalIgnoreCase)) continue;
+                var colon = line.IndexOf(':');
+                if (colon < 0) continue;
+
+                backend = tag;
+                var name = line[(colon + 1)..].Trim();
+                // 去掉末尾的 "(7948 MiB, 7180 MiB free)" 显存标注，界面展示更清爽
+                var paren = name.LastIndexOf(" (", StringComparison.Ordinal);
+                if (paren > 0 && name.EndsWith(")", StringComparison.Ordinal))
+                    name = name[..paren].Trim();
+                return name;
+            }
+        }
+        return "";
     }
 
     /// <summary>加载指定模型。会先卸掉正在跑的那个。</summary>
@@ -189,35 +271,67 @@ public sealed class EngineManager : IDisposable
         if (!File.Exists(ggufPath))
             return (false, "模型文件不存在");
 
-        if (IsRunning && string.Equals(LoadedModelPath, ggufPath, StringComparison.OrdinalIgnoreCase))
-            return (true, "已加载");
-
-        Unload();
-        _log.Clear();
-
-        // 端口探测和实际使用之间有空窗，别的进程可能抢占；万一冲突就换端口重试。
-        for (var attempt = 0; attempt < 3; attempt++)
+        // 串行化加载：别的调用方正在加载时在这里排队，等它加载完直接复用结果
+        await _loadGate.WaitAsync(ct);
+        try
         {
-            var result = await LaunchAndWaitAsync(ggufPath, gpuLayers, ctx, ct);
-            if (result.Ok) return result;
+            if (IsReady && string.Equals(LoadedModelPath, ggufPath, StringComparison.OrdinalIgnoreCase))
+                return (true, "已加载");
 
-            if (attempt < 2 && IsPortInUse(result.Message))
+            Unload();
+            _log.Clear();
+
+            // 加载期间也算“在用”：否则闲置计时用的是上次使用时间，
+            // 闲置卸载后重新加载时，定时器会把还没加载完的进程当成闲置进程杀掉。
+            _loading = true;
+            MarkUsed();
+
+            // 附加参数：-np 1 只开一个槽位（翻译不需要并发），--cache-ram 0 关闭提示词的内存缓存
+            // （实测每次翻译会多留约 20MB，连续使用会一路涨到数百 MB，且对划词翻译没有收益）。
+            // 万一用户换了不认识这两个参数的老版引擎，自动去掉后重试一次。
+            var useExtra = true;
+
+            // 端口探测和实际使用之间有空窗，别的进程可能抢占；万一冲突就换端口重试。
+            for (var attempt = 0; attempt < 4; attempt++)
             {
-                _port++;   // 从刚冲突的端口的下一个开始找
-                continue;
+                var result = await LaunchAndWaitAsync(ggufPath, gpuLayers, ctx, useExtra, ct);
+                if (result.Ok) return result;
+
+                if (useExtra && IsUnknownArgument(result.Message))
+                {
+                    useExtra = false;
+                    continue;
+                }
+
+                if (attempt < 3 && IsPortInUse(result.Message))
+                {
+                    _port++;   // 从刚冲突的端口的下一个开始找
+                    continue;
+                }
+
+                return result;
             }
 
-            return result;
+            return (false, "端口持续被占用，请稍后重试");
         }
-
-        return (false, "端口持续被占用，请稍后重试");
+        finally
+        {
+            _loading = false;
+            _loadGate.Release();
+        }
     }
+
+    private static bool IsUnknownArgument(string message) =>
+        message.Contains("invalid argument", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("unknown argument", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("unrecognized", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsPortInUse(string message) =>
         message.Contains("address already in use", StringComparison.OrdinalIgnoreCase)
         || message.Contains("address in use", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<(bool Ok, string Message)> LaunchAndWaitAsync(string ggufPath, int gpuLayers, int ctx, CancellationToken ct)
+    private async Task<(bool Ok, string Message)> LaunchAndWaitAsync(
+        string ggufPath, int gpuLayers, int ctx, bool useExtraArgs, CancellationToken ct)
     {
         _port = FindFreePort(_port);
         // 线程数降到物理核数的一半（最少 1）：CPU 推理占满核心时会把 UI 线程
@@ -227,6 +341,14 @@ public sealed class EngineManager : IDisposable
         // --reasoning off：Qwen3 这类模型默认会先输出一段思考过程，
         // 翻译场景不需要，关掉能让结果更干净也更快。对没有思考模式的模型无副作用。
         var args = $"-m \"{ggufPath}\" --port {_port} -ngl {gpuLayers} -c {ctx} --host 127.0.0.1 -t {threads} --no-webui --reasoning off";
+        if (useExtraArgs)
+        {
+            args += " -np 1 --cache-ram 0";
+            // 双显卡笔记本（如独显 + 核显）跑 Vulkan 时默认会按显存比例把模型拆到核显上，
+            // 实测速度会慢 3 倍；-sm none 只用主 GPU（llama.cpp 优先把独显排在第一位），
+            // 单卡机器下无副作用。
+            if (gpuLayers > 0) args += " -sm none";
+        }
 
         var psi = new ProcessStartInfo(Path.Combine(EngineDir, "llama-server.exe"), args)
         {
@@ -293,6 +415,7 @@ public sealed class EngineManager : IDisposable
         }
 
         // 等待模型加载完成（大模型可能要十几秒）
+        var proc = _proc;
         try
         {
             for (var i = 0; i < 240; i++)
@@ -300,7 +423,14 @@ public sealed class EngineManager : IDisposable
                 ct.ThrowIfCancellationRequested();
                 await Task.Delay(250, ct);
 
-                if (_proc.HasExited)
+                // 等待期间被别处卸载了（切换引擎、退出等）：不要再对着空引用或别的进程轮询
+                if (proc == null || !ReferenceEquals(_proc, proc))
+                {
+                    LastError = "加载被中断";
+                    return (false, LastError);
+                }
+
+                if (proc.HasExited)
                 {
                     var tail = Tail(600);
                     var msg = IsExoticQuant(ggufPath)
@@ -313,6 +443,7 @@ public sealed class EngineManager : IDisposable
 
                 if (await HealthAsync(ct))
                 {
+                    _ready = true;
                     MarkUsed();
                     return (true, "加载完成");
                 }
@@ -347,6 +478,7 @@ public sealed class EngineManager : IDisposable
 
     public void Unload()
     {
+        _ready = false;
         try
         {
             if (_proc is { HasExited: false })

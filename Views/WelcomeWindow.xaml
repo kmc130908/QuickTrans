@@ -26,16 +26,16 @@
 
                 <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,22,0,0">
                     <StackPanel>
-                        <TextBlock Text="✻  浮窗不会抢走焦点" FontSize="12.5" Foreground="#1A1A1E" />
+                        <TextBlock Text="✻  浮窗不会抢走焦点，也不会误关" FontSize="12.5" Foreground="#1A1A1E" />
                         <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
                                    TextWrapping="Wrap"
-                                   Text="你正在编辑的内容不会丢失，选区也保持原样。鼠标移开浮窗 5 秒后自动关闭。" />
+                                   Text="选区保持原样，继续滚动或点击当前窗口不会关掉浮窗；切到其它软件后 5 秒自动关闭（悬停可暂停）。" />
                     </StackPanel>
                 </Border>
 
                 <TextBlock Margin="0,18,0,0" FontSize="12.5" Foreground="#4A4A54"
                            TextWrapping="Wrap"
-                           Text="再按一次 Ctrl+Q 可以手动关闭。按 Esc 也行。" />
+                           Text="按住浮窗任意空白或译文区域可拖动；再按一次 Ctrl+Q 或 Esc 可手动关闭。" />
             </StackPanel>
 
             <StackPanel x:Name="Page2" Visibility="Collapsed">
@@ -50,7 +50,7 @@
                         <TextBlock Text="🖼  截图翻译  ·  Alt+S" FontSize="12.5" Foreground="#1A1A1E" />
                         <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
                                    TextWrapping="Wrap"
-                                   Text="框选屏幕上的任意区域，识别其中的文字再翻译。适合图片、视频字幕、不能复制的界面。" />
+                                   Text="框选屏幕上的任意区域，调用系统离线 OCR 识别文字再翻译。适合图片、视频字幕、不能复制的界面。" />
                     </StackPanel>
                 </Border>
 
@@ -59,43 +59,43 @@
                         <TextBlock Text="⌨  手动输入  ·  没选中文字时按 Ctrl+Q" FontSize="12.5" Foreground="#1A1A1E" />
                         <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
                                    TextWrapping="Wrap"
-                                   Text="浮窗变成输入框，可以直接打字或粘贴。支持多段文本，Ctrl+Enter 翻译。" />
+                                   Text="浮窗变成输入框，可直接打字或粘贴多段文本，按 Ctrl+Enter 翻译，改完可反复重译。" />
                     </StackPanel>
                 </Border>
 
                 <TextBlock Margin="0,18,0,0" FontSize="12.5" Foreground="#4A4A54"
                            TextWrapping="Wrap"
-                           Text="浮窗底部可以一键切换目标语言，也可以朗读译文。" />
+                           Text="浮窗操作栏可一键切换目标语言、离线朗读（再点即停）或复制译文。" />
             </StackPanel>
 
             <StackPanel x:Name="Page3" Visibility="Collapsed">
-                <TextBlock Text="先装一个模型" FontSize="22" FontWeight="SemiBold"
+                <TextBlock Text="准备翻译模型或在线接口" FontSize="22" FontWeight="SemiBold"
                            Foreground="#1A1A1E" />
                 <TextBlock Margin="0,14,0,0" FontSize="13.5" Foreground="#4A4A54"
                            TextWrapping="Wrap" LineHeight="24"
-                           Text="翻译靠本地模型完成，安装包为了轻量没有内置。需要在「组件管理」里下载一个：" />
+                           Text="本地翻译全程离线免费，首次使用只需下载一个模型（也可改用在线 API）：" />
 
-                <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,16,0,0">
+                <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,14,0,0">
                     <StackPanel>
-                        <TextBlock Text="下载模型" FontSize="12.5" Foreground="#1A1A1E" />
+                        <TextBlock Text="📦  下载本地模型（推荐）" FontSize="12.5" Foreground="#1A1A1E" />
                         <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
                                    TextWrapping="Wrap"
-                                   Text="推荐 Qwen3-0.6B（609MB，国内直连，几分钟下完）。也可以选更大的模型换质量。" />
+                                   Text="在「组件管理」中下载 Qwen3-0.6B（609MB，阿里源直连）或 Hy-MT2-1.8B（1.06GB，翻译质量最稳）。" />
                     </StackPanel>
                 </Border>
 
                 <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,10,0,0">
                     <StackPanel>
-                        <TextBlock Text="有 NVIDIA 显卡？" FontSize="12.5" Foreground="#1A1A1E" />
-                        <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
+                        <TextBlock x:Name="AccelTitle" Text="⚡  已内置 GPU 通用加速" FontSize="12.5" Foreground="#1A1A1E" />
+                        <TextBlock x:Name="AccelDesc" Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
                                    TextWrapping="Wrap"
-                                   Text="再下一个 GPU 加速引擎，速度能快 3-4 倍。不装也能用，只是慢一些。" />
+                                   Text="支持 NVIDIA / AMD / Intel 显卡自动加速，也可在设置里随时切回 CPU。不想下模型也可在设置里配置 DeepSeek / 百度 / 有道 / 谷歌接口。" />
                     </StackPanel>
                 </Border>
 
-                <TextBlock Margin="0,18,0,0" FontSize="12.5" Foreground="#4A4A54"
+                <TextBlock Margin="0,16,0,0" FontSize="12.5" Foreground="#4A4A54"
                            TextWrapping="Wrap"
-                           Text="这些以后随时能在「设置 → 关于与更新 → 管理组件」里重新打开。" />
+                           Text="以上入口随时可在「设置 → 关于与更新」里重新打开。首次翻译时按需加载模型，待机更省内存。" />
             </StackPanel>
         </Grid>
 

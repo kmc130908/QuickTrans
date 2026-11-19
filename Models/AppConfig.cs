@@ -117,8 +117,8 @@ public sealed class AppConfig
     /// <summary>取词方式：auto / uia / clipboard。</summary>
     public string GrabMode { get; set; } = "auto";
 
-    /// <summary>启动时预加载上次用的模型。</summary>
-    public bool PrewarmModel { get; set; } = true;
+    /// <summary>启动时预加载上次用的模型。默认关闭以降低待机内存占用，首次翻译时按需加载。</summary>
+    public bool PrewarmModel { get; set; } = false;
 
     [JsonIgnore]
     public static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "config.json");

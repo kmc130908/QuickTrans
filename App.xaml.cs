@@ -1,6 +1,10 @@
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
+using System.Windows.Interop;
+using System.Windows.Media;
 using QuickTrans.Models;
 using QuickTrans.Services;
 using QuickTrans.Views;
@@ -11,12 +15,24 @@ namespace QuickTrans;
 
 public partial class App : System.Windows.Application
 {
+    static App()
+    {
+        // 纯 2D 文字浮窗与设置表单无需 GPU 硬件渲染，软件渲染可减少约 5–11MB 常驻内存
+        RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+    }
+
     private Mutex? _mutex;
     private bool _ownsMutex;
     private WinForms.NotifyIcon? _tray;
     private HotkeyManager? _hotkey;
     private HotkeyManager? _ocrHotkey;
     private EngineManager? _engine;
+    private AppIpcServer? _ipc;
+    private Process? _settingsProc;
+    private IntPtr _settingsChildHwnd;
+    private Process? _inputProc;
+    private IntPtr _inputChildHwnd;
+    private Process? _componentProc;
     private AppConfig _config = null!;
     private PopupWindow? _popup;
     private SettingsWindow? _settingsWin;
@@ -55,6 +71,30 @@ public partial class App : System.Windows.Application
             args.SetObserved();
         };
 
+        // 子进程模式：设置页 / 首次引导 / 组件管理在独立短生命周期进程里运行。
+        // 窗口关闭后进程直接退出，系统注入的输入法（IME）、D3D11 显卡驱动与语音库内存
+        // 会 100% 归还操作系统，不污染常驻主进程。
+        if (e.Args.Any(a => a.Equals("--settings-child", StringComparison.OrdinalIgnoreCase)))
+        {
+            RunSettingsChild();
+            return;
+        }
+        if (e.Args.Any(a => a.Equals("--welcome-child", StringComparison.OrdinalIgnoreCase)))
+        {
+            RunWelcomeChild();
+            return;
+        }
+        if (e.Args.Any(a => a.Equals("--components-child", StringComparison.OrdinalIgnoreCase)))
+        {
+            RunComponentsChild();
+            return;
+        }
+        if (e.Args.Any(a => a.Equals("--input-child", StringComparison.OrdinalIgnoreCase)))
+        {
+            RunInputChild();
+            return;
+        }
+
         Log("=== startup ===");
 
         _mutex = new Mutex(true, @"Local\QuickTrans_SingleInstance", out var isNew);
@@ -87,6 +127,7 @@ public partial class App : System.Windows.Application
         BuildTray();
         RegisterHotkeys();
         SetupIdleTimer();
+        _ipc = new AppIpcServer(HandleIpcAsync);
 
         if (_config.PrewarmModel && string.Equals(_config.Engine, "local", StringComparison.OrdinalIgnoreCase))
             _ = PrewarmAsync();
@@ -100,6 +141,7 @@ public partial class App : System.Windows.Application
         Log("startup complete");
 
         // 后台检查新版本，失败静默
+        UpdateService.CleanupOldExe();
         _ = CheckUpdateAsync();
 
         // 上次下载了新版本但没重启：提醒一句，更新入口在设置页
@@ -125,23 +167,27 @@ public partial class App : System.Windows.Application
             _config.WelcomeShown = true;
             _config.ComponentHintShown = true;
             _config.Save();
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                var w = new ComponentWindow(
-                    new ComponentManager(AppContext.BaseDirectory), autoComponents);
-                w.ShowDialog();
-            }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Dispatcher.BeginInvoke(new Action(() => OpenComponentManager(autoComponents)),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
-        // 首次使用引导：优先于其他弹窗，只出现一次
+        // 首次使用引导：优先于其他弹窗，只出现一次（在独立子进程里运行，关掉后不留驻内存）
         else if (!_config.WelcomeShown)
         {
             interrupted = true;
             _config.WelcomeShown = true;
             _config.Save();
-            Dispatcher.BeginInvoke(new Action(() =>
+            var needGuideAfterWelcome = !_config.ComponentHintShown && _engine != null
+                && (_engine.ScanModels().Count == 0 || (HasNvidiaGpu() && !HasGpuEngine()));
+            if (needGuideAfterWelcome)
             {
-                var w = new WelcomeWindow();
-                w.ShowDialog();
+                _config.ComponentHintShown = true;
+                _config.Save();
+            }
+
+            Dispatcher.BeginInvoke(new Action(async () =>
+            {
+                await RunChildWindowAndWaitAsync("--welcome-child");
+                if (needGuideAfterWelcome) OpenComponentManager();
             }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
 
@@ -150,17 +196,17 @@ public partial class App : System.Windows.Application
         //  - 有 NVIDIA 显卡但装的是 CPU 引擎 → 提示可以下 GPU 引擎
         // 只提示一次，之后用户自己从托盘菜单进。
         var guided = false;
-        if (!_config.ComponentHintShown && _engine != null)
+        if (!interrupted && !_config.ComponentHintShown && _engine != null)
         {
             var needModel = _engine.ScanModels().Count == 0;
-            var canUpgradeGpu = HasNvidiaGpu() && !HasCudaEngine();
+            var canUpgradeGpu = HasNvidiaGpu() && !HasGpuEngine();
 
             if (needModel || canUpgradeGpu)
             {
                 guided = true;
                 _config.ComponentHintShown = true;
                 _config.Save();
-                Dispatcher.BeginInvoke(new Action(OpenComponentManager),
+                Dispatcher.BeginInvoke(new Action(() => OpenComponentManager()),
                     System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             }
         }
@@ -305,9 +351,20 @@ public partial class App : System.Windows.Application
         }
 
         var handle = bmp.GetHicon();
-        using var tmp = Drawing.Icon.FromHandle(handle);
-        return (Drawing.Icon)tmp.Clone();
+        try
+        {
+            using var tmp = Drawing.Icon.FromHandle(handle);
+            return (Drawing.Icon)tmp.Clone();
+        }
+        finally
+        {
+            // GetHicon 创建的句柄归调用方释放；Clone 已经复制了一份，原句柄不销毁就会泄漏
+            DestroyIcon(handle);
+        }
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     // ---------- 热键 ----------
 
@@ -335,6 +392,11 @@ public partial class App : System.Windows.Application
     private async void OnTranslateHotkey(object? sender, EventArgs e)
     {
         Log("translate hotkey pressed");
+        if (_inputProc is { HasExited: false })
+        {
+            CloseInputChild();
+            return;
+        }
         if (_popup is { IsVisible: true })
         {
             _popup.Close();
@@ -461,6 +523,9 @@ public partial class App : System.Windows.Application
 
             if (ReferenceEquals(_popup, popup))
             {
+                // 浮窗被关掉（手动关、自动关闭、Esc）就没人接收译文了，
+                // 终止还在后台跑的翻译，别白白占用 CPU/GPU 直到译完。
+                _cts?.Cancel();
                 _popup = null;
                 OnPopupClosed();
             }
@@ -496,11 +561,10 @@ public partial class App : System.Windows.Application
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            // 没取到就转成手动输入，用户可以直接打字
-            _currentSource = "";
-            _currentTarget = _config.TargetLanguage;
-            _popup.ConfigureLanguages(_config.QuickLanguages, _currentTarget);
-            _popup.EnterInputMode("没有选中文本，输入后回车");
+            // 没取到就转成手动输入（在独立子进程里运行，输入法与语音库关闭即彻底释放，不污染主进程）
+            _popup.Close();
+            _popup = null;
+            OpenInputPopup("没有选中文本，输入后按 Ctrl+Enter 翻译");
             return;
         }
 
@@ -525,20 +589,83 @@ public partial class App : System.Windows.Application
         await TranslateTextAsync(text);
     }
 
-    private void OpenInputPopup()
+    private void OpenInputPopup(string hint = "输入后按 Ctrl+Enter 翻译")
     {
         if (_popup is { IsVisible: true })
         {
+            _cts?.Cancel();
             _popup.Close();
             _popup = null;
         }
 
-        _popup = CreatePopup();
-        _popup.Show();
-        _currentSource = "";
-        _currentTarget = _config.TargetLanguage;
-        _popup.ConfigureLanguages(_config.QuickLanguages, _currentTarget);
-        _popup.EnterInputMode("输入后回车翻译");
+        if (_inputProc is { HasExited: false })
+        {
+            if (_inputChildHwnd != IntPtr.Zero)
+            {
+                ShowWindow(_inputChildHwnd, SW_RESTORE);
+                SetForegroundWindow(_inputChildHwnd);
+            }
+            else
+            {
+                BringProcessWindowToFront(_inputProc);
+            }
+            return;
+        }
+
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            // 拿不到自身路径时退回同进程模式
+            _popup = CreatePopup();
+            _popup.Show();
+            _currentSource = "";
+            _currentTarget = _config.TargetLanguage;
+            _popup.ConfigureLanguages(_config.QuickLanguages, _currentTarget);
+            _popup.EnterInputMode(hint);
+            return;
+        }
+
+        try
+        {
+            var hintB64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(hint));
+            var proc = Process.Start(new ProcessStartInfo(exe, $"--input-child --input-hint={hintB64}")
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            if (proc == null) return;
+
+            _inputProc = proc;
+            _inputChildHwnd = IntPtr.Zero;
+            Log($"OpenInputPopup: child pid={proc.Id}");
+
+            _ = proc.WaitForExitAsync().ContinueWith(_ =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (ReferenceEquals(_inputProc, proc))
+                    {
+                        _inputProc = null;
+                        _inputChildHwnd = IntPtr.Zero;
+                    }
+                    try { proc.Dispose(); } catch { }
+                }));
+            });
+        }
+        catch (Exception ex)
+        {
+            Log("open input child failed: " + ex.Message);
+        }
+    }
+
+    private void CloseInputChild()
+    {
+        if (_inputChildHwnd != IntPtr.Zero)
+        {
+            PostMessage(_inputChildHwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            return;
+        }
+        try { if (_inputProc is { HasExited: false }) _inputProc.Kill(); } catch { }
     }
 
     private async Task OnManualSubmitAsync(string text)
@@ -567,12 +694,16 @@ public partial class App : System.Windows.Application
         var target = TranslationService.ResolveTarget(source, _config, forcedTarget);
         _currentTarget = target;
 
-        _popup.ConfigureLanguages(_config.QuickLanguages, target);
+        // 全程用局部变量引用“这一次”的浮窗：后台线程和 await 之后再读 _popup 字段，
+        // 可能已经被关掉置空（空引用），或换成了下一次翻译的新浮窗（旧译文串进新窗口）。
+        var popup = _popup;
 
-        if (fromInput) _popup.StartManualTranslate(EngineLabel(), target);
-        else _popup.ShowSource(source, EngineLabel());
+        popup.ConfigureLanguages(_config.QuickLanguages, target);
 
-        _popup.SetStatus($"翻译为 {target} …");
+        if (fromInput) popup.StartManualTranslate(EngineLabel(), target);
+        else popup.ShowSource(source, EngineLabel());
+
+        popup.SetStatus($"翻译为 {target} …");
 
         try
         {
@@ -581,24 +712,25 @@ public partial class App : System.Windows.Application
                 var ready = await EnsureEngineAsync(ct);
                 if (!ready.Ok)
                 {
-                    _popup.ShowError(ready.Message);
+                    if (!ct.IsCancellationRequested) popup.ShowError(ready.Message);
                     return;
                 }
             }
 
             Log($"translate start -> {target}");
-            _popup.StartStreaming();
+            popup.StartStreaming();
 
             // 把翻译数据的接收放到后台线程：await foreach 在后台消费 token，
             // 只往浮窗的线程安全缓冲区塞文字，不碰任何 UI 控件。
             // UI 线程由浮窗自己的 DispatcherTimer 每 100ms 刷一次，
             // 这样鼠标拖动、点击按钮全程零卡顿。
+            var baseUrl = _engine!.BaseUrl;
             await Task.Run(async () =>
             {
                 await foreach (var piece in TranslationService.TranslateAsync(
-                    source, _config, _engine!.BaseUrl, target, ct))
+                    source, _config, baseUrl, target, ct))
                 {
-                    _popup.AppendChunk(piece);
+                    popup.AppendChunk(piece);
                 }
             }, ct);
 
@@ -606,16 +738,18 @@ public partial class App : System.Windows.Application
             _engine?.MarkUsed();
 
             // 回 UI 线程收尾
-            _popup.Finish();
+            if (!ct.IsCancellationRequested) popup.Finish();
         }
         catch (OperationCanceledException)
         {
-            // 被新的翻译取代，忽略
+            // 被新的翻译取代或浮窗已关闭：忽略。
+            // 但如果不是我们主动取消的，那就是在线接口超时——不提示的话浮窗会一直停在“翻译中…”
+            if (!ct.IsCancellationRequested) popup.ShowError("翻译超时，请检查网络或接口设置后重试。");
         }
         catch (Exception ex)
         {
             Log("translate failed: " + ex.Message);
-            _popup.ShowError("翻译失败：" + ex.Message);
+            if (!ct.IsCancellationRequested) popup.ShowError("翻译失败：" + ex.Message);
         }
     }
 
@@ -643,13 +777,15 @@ public partial class App : System.Windows.Application
         // 语言按钮只是临时切换，不改默认设置，避免把默认目标语言带偏
         _currentTarget = target;
 
-        if (_popup == null) return;
-        _popup.ConfigureLanguages(_config.QuickLanguages, target);
-        _popup.StartTranslate(target);
+        var popup = _popup;
+        if (popup == null) return;
+        popup.ConfigureLanguages(_config.QuickLanguages, target);
+        popup.StartTranslate(target);
 
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
+        var source = _currentSource;
 
         try
         {
@@ -658,29 +794,33 @@ public partial class App : System.Windows.Application
                 var ready = await EnsureEngineAsync(ct);
                 if (!ready.Ok)
                 {
-                    _popup.ShowError(ready.Message);
+                    if (!ct.IsCancellationRequested) popup.ShowError(ready.Message);
                     return;
                 }
             }
 
-            _popup.StartStreaming();
+            popup.StartStreaming();
 
+            var baseUrl = _engine!.BaseUrl;
             await Task.Run(async () =>
             {
                 await foreach (var piece in TranslationService.TranslateAsync(
-                    _currentSource, _config, _engine!.BaseUrl, target, ct))
+                    source, _config, baseUrl, target, ct))
                 {
-                    _popup.AppendChunk(piece);
+                    popup.AppendChunk(piece);
                 }
             }, ct);
 
             _engine?.MarkUsed();
-            _popup.Finish();
+            if (!ct.IsCancellationRequested) popup.Finish();
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            if (!ct.IsCancellationRequested) popup.ShowError("翻译超时，请检查网络或接口设置后重试。");
+        }
         catch (Exception ex)
         {
-            _popup.ShowError("翻译失败：" + ex.Message);
+            if (!ct.IsCancellationRequested) popup.ShowError("翻译失败：" + ex.Message);
         }
     }
 
@@ -690,6 +830,7 @@ public partial class App : System.Windows.Application
         var previousSource = _currentSource;
         if (_popup is { IsVisible: true })
         {
+            _cts?.Cancel();   // 旧浮窗上还在进行的翻译不再有人接收，别让它继续往后写
             _popup.Close();
             _popup = null;
         }
@@ -730,7 +871,9 @@ public partial class App : System.Windows.Application
     private async Task<(bool Ok, string Message)> EnsureEngineAsync(CancellationToken ct)
     {
         if (_engine == null) return (false, "引擎未初始化");
-        if (_engine.IsRunning)
+        // 用 IsReady 而不是 IsRunning：进程刚启动、模型还在加载时 IsRunning 已经为 true，
+        // 此时直接发请求会失败；走 LoadAsync 会排队等加载完成再返回。
+        if (_engine.IsReady)
         {
             _engine.MarkUsed();
             return (true, "就绪");
@@ -754,8 +897,8 @@ public partial class App : System.Windows.Application
         var useGpu = _config.UseGpu;
         if (useGpu && !_engine.SupportsGpu)
         {
-            // 精简版引擎没有 CUDA 组件，即使传 -ngl 999 也只会静默跑 CPU，这里直接说明白
-            Log("配置要求 GPU，但当前引擎没有 CUDA 组件，自动改用 CPU");
+            // 精简版引擎没有 GPU 后端，或系统未检测到可用 GPU，这里直接说明白并切回 CPU
+            Log("配置要求 GPU，但当前引擎未检测到可用 GPU（CUDA/Vulkan），自动改用 CPU");
             useGpu = false;
         }
 
@@ -879,113 +1022,658 @@ public partial class App : System.Windows.Application
         }
     }
 
-    /// <summary>当前引擎目录里有没有 CUDA 后端，即是否已经是 GPU 版。</summary>
-    private static bool HasCudaEngine() =>
-        File.Exists(Path.Combine(AppContext.BaseDirectory, "engine", "ggml-cuda.dll"));
+    /// <summary>当前引擎目录里有没有 GPU 后端（CUDA / Vulkan / ROCm），即是否已经是 GPU 版。</summary>
+    private static bool HasGpuEngine() =>
+        EngineManager.HasGpuBackend(Path.Combine(AppContext.BaseDirectory, "engine"));
 
-    /// <summary>打开组件管理窗口（下载 GPU 引擎、模型）。</summary>
-    private void OpenComponentManager()
+    // ---------- 子进程窗口与跨进程同步 ----------
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    private const int SW_RESTORE = 9;
+    private const uint WM_CLOSE = 0x0010;
+
+    private async void RunSettingsChild()
     {
-        var win = new ComponentWindow(new ComponentManager(AppContext.BaseDirectory))
+        try
         {
-            Owner = null,
-        };
-        win.ShowDialog();
+            var cfg = AppConfig.Load();
+            var engine = new EngineManager(AppContext.BaseDirectory, cfg.EngineVariant);
 
-        // 刚下完模型可能立刻可用，刷新一下引擎状态
-        _engine?.MarkUsed();
+            // 向主进程查询当前已加载的模型路径，用于显示「已加载」角标
+            string? loadedPath = null;
+            var status = await AppIpcClient.SendAsync("GET_STATUS", connectTimeoutMs: 1000);
+            if (status != null && status.StartsWith("OK\t", StringComparison.Ordinal))
+            {
+                var p = status[3..];
+                if (!string.IsNullOrWhiteSpace(p)) loadedPath = p;
+            }
+
+            var win = new SettingsWindow(cfg, engine, childMode: true, loadedModelPath: loadedPath)
+            {
+                WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            };
+            MainWindow = win;
+            win.Closed += (_, _) =>
+            {
+                engine.Dispose();
+                Shutdown();
+            };
+            win.Show();
+            win.Activate();
+
+            // 把精确的设置窗口句柄上报主进程（避免 Process.MainWindowHandle 误拿到输入法隐藏窗）
+            var hwnd = new WindowInteropHelper(win).Handle;
+            if (hwnd != IntPtr.Zero)
+                _ = AppIpcClient.SendAsync($"SETTINGS_HWND\t{hwnd.ToInt64()}");
+        }
+        catch (Exception ex)
+        {
+            Log("settings-child failed: " + ex);
+            Shutdown();
+        }
+    }
+
+    private void RunWelcomeChild()
+    {
+        try
+        {
+            var win = new WelcomeWindow();
+            win.Closed += (_, _) => Shutdown();
+            win.Show();
+            win.Activate();
+        }
+        catch
+        {
+            Shutdown();
+        }
+    }
+
+    private void RunComponentsChild()
+    {
+        try
+        {
+            var auto = ParseComponentArg();
+            var mgr = new ComponentManager(AppContext.BaseDirectory);
+            var win = auto.Length > 0
+                ? new ComponentWindow(mgr, auto)
+                : new ComponentWindow(mgr);
+            MainWindow = win;
+            win.Closed += (_, _) => Shutdown();
+            win.Show();
+            win.Activate();
+        }
+        catch
+        {
+            Shutdown();
+        }
+    }
+
+    /// <summary>
+    /// 手动输入模式子进程：承载带键盘焦点的输入浮窗，输入法与朗读语音库只加载在本进程内；
+    /// 关闭浮窗即退出进程，100% 释放输入法与显卡驱动内存，同时复用主进程持有的本地模型。
+    /// </summary>
+    private void RunInputChild()
+    {
+        try
+        {
+            _config = AppConfig.Load();
+            _currentSource = "";
+            _currentTarget = _config.TargetLanguage;
+
+            var hint = "输入后按 Ctrl+Enter 翻译";
+            const string prefix = "--input-hint=";
+            foreach (var arg in Environment.GetCommandLineArgs())
+            {
+                if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        hint = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(arg[prefix.Length..]));
+                    }
+                    catch { }
+                    break;
+                }
+            }
+
+            PopupWindow.AutoCloseEnabled = false;
+            PopupWindow.TimedCloseEnabled = false;
+
+            var popup = new PopupWindow();
+            MainWindow = popup;
+            popup.ApplyOpacity(_config.PopupOpacity);
+            popup.ApplyTtsVisibility(_config.TtsEnabled);
+            popup.ConfigureLanguages(_config.QuickLanguages, _currentTarget);
+
+            async Task RunTranslateAsync(string source, string? forcedTarget)
+            {
+                // 每次翻译前重读一次配置，保证在设置页刚改完的接口/模型立即生效
+                _config = AppConfig.Load();
+                popup.ApplyOpacity(_config.PopupOpacity);
+                popup.ApplyTtsVisibility(_config.TtsEnabled);
+
+                _currentSource = source;
+                _cts?.Cancel();
+                _cts = new CancellationTokenSource();
+                var ct = _cts.Token;
+
+                var target = TranslationService.ResolveTarget(source, _config, forcedTarget);
+                _currentTarget = target;
+
+                popup.ConfigureLanguages(_config.QuickLanguages, target);
+                popup.StartManualTranslate(EngineLabel(), target);
+
+                try
+                {
+                    var baseUrl = "";
+                    if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
+                    {
+                        popup.SetStatus("正在准备本地模型…");
+                        var reply = await AppIpcClient.SendAsync("ENSURE_ENGINE", connectTimeoutMs: 2000, ct);
+                        if (reply != null && reply.StartsWith("OK\t", StringComparison.Ordinal))
+                        {
+                            baseUrl = reply[3..];
+                        }
+                        else
+                        {
+                            var msg = reply != null && reply.StartsWith("ERR\t", StringComparison.Ordinal)
+                                ? reply[4..]
+                                : "无法连接到主程序，请重试。";
+                            if (!ct.IsCancellationRequested) popup.ShowError(msg);
+                            return;
+                        }
+                    }
+
+                    popup.SetStatus($"翻译为 {target} …");
+                    popup.StartStreaming();
+
+                    await Task.Run(async () =>
+                    {
+                        await foreach (var piece in TranslationService.TranslateAsync(
+                            source, _config, baseUrl, target, ct))
+                        {
+                            popup.AppendChunk(piece);
+                        }
+                    }, ct);
+
+                    if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
+                        _ = AppIpcClient.SendAsync("MARK_USED");
+
+                    if (!ct.IsCancellationRequested) popup.Finish();
+                }
+                catch (OperationCanceledException)
+                {
+                    if (!ct.IsCancellationRequested) popup.ShowError("翻译超时，请检查网络或接口设置后重试。");
+                }
+                catch (Exception ex)
+                {
+                    if (!ct.IsCancellationRequested) popup.ShowError("翻译失败：" + ex.Message);
+                }
+            }
+
+            popup.ManualTextSubmitted += async text =>
+            {
+                var target = string.IsNullOrWhiteSpace(_currentTarget) ? null : _currentTarget;
+                await RunTranslateAsync(text, target);
+            };
+
+            popup.LanguageRequested += async lang =>
+            {
+                if (string.IsNullOrWhiteSpace(_currentSource))
+                {
+                    _currentTarget = lang;
+                    popup.ConfigureLanguages(_config.QuickLanguages, lang);
+                    popup.SetStatus($"将翻译为 {lang} · 输入后按 Ctrl+Enter 翻译");
+                    return;
+                }
+                await RunTranslateAsync(_currentSource, lang);
+            };
+
+            popup.SpeakRequested += async text =>
+            {
+                try
+                {
+                    if (_speech is { IsSpeaking: true })
+                    {
+                        _speech.Stop();
+                        return;
+                    }
+                    var lang = TranslationService.IsMostlyChinese(text) ? "zh" : "en";
+                    var speech = _speech ??= new SpeechService();
+                    speech.Stopped -= OnChildSpeechStopped;
+                    speech.Stopped += OnChildSpeechStopped;
+                    popup.SetSpeaking(true);
+                    await speech.SpeakAsync(text, lang, _config);
+                }
+                catch (Exception ex)
+                {
+                    Log("input-child speak failed: " + ex.Message);
+                    popup.SetSpeaking(false);
+                }
+
+                void OnChildSpeechStopped()
+                {
+                    try
+                    {
+                        if (Dispatcher.CheckAccess()) popup.SetSpeaking(false);
+                        else Dispatcher.BeginInvoke(new Action(() => { try { popup.SetSpeaking(false); } catch { } }));
+                    }
+                    catch { }
+                }
+            };
+
+            popup.QuickLanguagesChanged += langs =>
+            {
+                _config.QuickLanguages = langs;
+                _config.Save();
+                _ = AppIpcClient.SendAsync("RELOAD_CONFIG");
+            };
+
+            popup.SettingsRequested += () => _ = AppIpcClient.SendAsync("OPEN_SETTINGS");
+
+            popup.OcrRequested += () =>
+            {
+                _ = AppIpcClient.SendAsync("START_OCR");
+                popup.Close();
+            };
+
+            popup.Closed += async (_, _) =>
+            {
+                _cts?.Cancel();
+                try { _speech?.Stop(); } catch { }
+                try { _speech?.Dispose(); } catch { }
+                try { await AppIpcClient.SendAsync("INPUT_CLOSED", connectTimeoutMs: 400); } catch { }
+                Shutdown();
+            };
+
+            popup.Show();
+            popup.EnterInputMode(hint);
+
+            var hwnd = new WindowInteropHelper(popup).Handle;
+            if (hwnd != IntPtr.Zero)
+                _ = AppIpcClient.SendAsync($"INPUT_HWND\t{hwnd.ToInt64()}");
+        }
+        catch (Exception ex)
+        {
+            Log("input-child failed: " + ex);
+            Shutdown();
+        }
+    }
+
+    private static async Task RunChildWindowAndWaitAsync(string args)
+    {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe)) return;
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo(exe, args)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            if (proc != null) await proc.WaitForExitAsync();
+        }
+        catch { }
+    }
+
+    private async Task<string> HandleIpcAsync(string command)
+    {
+        if (command == "GET_STATUS")
+            return "OK\t" + (_engine?.LoadedModelPath ?? "");
+
+        if (command.StartsWith("SETTINGS_HWND\t", StringComparison.Ordinal))
+        {
+            if (long.TryParse(command["SETTINGS_HWND\t".Length..], out var raw))
+            {
+                var hwnd = new IntPtr(raw);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _settingsChildHwnd = hwnd;
+                    _popup?.SetSettingsWindow(hwnd);
+                });
+            }
+            return "OK";
+        }
+
+        if (command.StartsWith("INPUT_HWND\t", StringComparison.Ordinal))
+        {
+            if (long.TryParse(command["INPUT_HWND\t".Length..], out var raw))
+            {
+                var hwnd = new IntPtr(raw);
+                await Dispatcher.InvokeAsync(() => _inputChildHwnd = hwnd);
+            }
+            return "OK";
+        }
+
+        if (command == "ENSURE_ENGINE")
+        {
+            return await Dispatcher.InvokeAsync(async () =>
+            {
+                var ready = await EnsureEngineAsync(CancellationToken.None);
+                return ready.Ok ? "OK\t" + _engine!.BaseUrl : "ERR\t" + ready.Message;
+            }).Task.Unwrap();
+        }
+
+        if (command == "MARK_USED")
+        {
+            _engine?.MarkUsed();
+            return "OK";
+        }
+
+        if (command == "INPUT_CLOSED")
+        {
+            await Dispatcher.InvokeAsync(OnPopupClosed);
+            return "OK";
+        }
+
+        if (command == "OPEN_SETTINGS")
+        {
+            await Dispatcher.InvokeAsync(OpenSettings);
+            return "OK";
+        }
+
+        if (command == "START_OCR")
+        {
+            await Dispatcher.InvokeAsync(() => _ = StartOcrAsync());
+            return "OK";
+        }
+
+        if (command == "RELOAD_CONFIG")
+        {
+            await Dispatcher.InvokeAsync(ApplyReloadedConfig);
+            return "OK";
+        }
+
+        if (command.StartsWith("LOAD_MODEL\t", StringComparison.Ordinal))
+        {
+            var filePath = command["LOAD_MODEL\t".Length..];
+            return await Dispatcher.InvokeAsync(async () =>
+            {
+                ApplyReloadedConfig();
+                if (_engine == null) return "ERR\t引擎未初始化";
+
+                var useGpu = _config.UseGpu && _engine.SupportsGpu;
+                var layers = useGpu ? Math.Max(1, _config.GpuLayers) : 0;
+                var (ok, msg) = await _engine.LoadAsync(filePath, layers, _config.ContextSize);
+                return ok ? "OK\t" + filePath : "ERR\t" + msg;
+            }).Task.Unwrap();
+        }
+
+        if (command == "APPLY_UPDATE")
+        {
+            return await Dispatcher.InvokeAsync(() =>
+            {
+                if (!UpdateService.ApplyAndRestart()) return "ERR";
+                Dispatcher.BeginInvoke(new Action(ExitApp),
+                    System.Windows.Threading.DispatcherPriority.Background);
+                return "OK";
+            });
+        }
+
+        return "ERR\tunknown";
+    }
+
+    /// <summary>设置子进程写盘后，由主进程重载 config.json 并让所有改动立即生效。</summary>
+    private void ApplyReloadedConfig()
+    {
+        var oldStyle = _config.TrayIconStyle;
+        var oldVariant = _config.EngineVariant;
+        var oldUseGpu = _config.UseGpu;
+        var oldHotkey = _config.Hotkey;
+        var oldOcrHotkey = _config.OcrHotkey;
+
+        _config.CopyFrom(AppConfig.Load());
+
+        // 同步浮窗静态与实例参数
+        PopupWindow.AutoCloseEnabled = _config.PopupAutoClose;
+        PopupWindow.AutoCloseSeconds = _config.PopupAutoCloseSeconds;
+        PopupWindow.AutoClosePauseOnHover = _config.PopupAutoClosePauseOnHover;
+        PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
+        PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
+        _popup?.ApplyOpacity(_config.PopupOpacity);
+        _popup?.ApplyTtsVisibility(_config.TtsEnabled);
+
+        if (!string.Equals(_config.Hotkey, oldHotkey, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(_config.OcrHotkey, oldOcrHotkey, StringComparison.OrdinalIgnoreCase))
+        {
+            RegisterHotkeys();
+        }
+
+        if (_config.TrayIconStyle != oldStyle && _tray != null)
+        {
+            var previous = _tray.Icon;
+            _tray.Icon = CreateTrayIcon(_config.TrayIconStyle);
+            try { previous?.Dispose(); } catch { }
+        }
+
+        if (!string.Equals(_config.EngineVariant, oldVariant, StringComparison.OrdinalIgnoreCase))
+        {
+            Log($"engine variant -> {_config.EngineVariant}");
+            _engine?.Unload();
+            _engine?.SwitchEngine(_config.EngineVariant);
+            Log($"engine dir now {_engine?.EngineDir}");
+        }
+        else if (_config.UseGpu != oldUseGpu && _engine is { IsRunning: true })
+        {
+            Log($"useGpu -> {_config.UseGpu}, unload current model");
+            _engine.Unload();
+        }
+
+        AutoStartService.Sync(_config.AutoStart);
+    }
+
+    private static void BringProcessWindowToFront(Process proc)
+    {
+        try
+        {
+            proc.Refresh();
+            var hwnd = proc.MainWindowHandle;
+            if (hwnd != IntPtr.Zero)
+            {
+                ShowWindow(hwnd, SW_RESTORE);
+                SetForegroundWindow(hwnd);
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>打开组件管理窗口（独立子进程运行，关闭后不留驻内存）。</summary>
+    private void OpenComponentManager(string[]? autoIds = null)
+    {
+        if (_componentProc is { HasExited: false })
+        {
+            BringProcessWindowToFront(_componentProc);
+            return;
+        }
+
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            var win = autoIds is { Length: > 0 }
+                ? new ComponentWindow(new ComponentManager(AppContext.BaseDirectory), autoIds)
+                : new ComponentWindow(new ComponentManager(AppContext.BaseDirectory));
+            win.ShowDialog();
+            _engine?.MarkUsed();
+            return;
+        }
+
+        var args = "--components-child";
+        if (autoIds is { Length: > 0 })
+            args += " --install-components=" + string.Join(",", autoIds);
+
+        try
+        {
+            var proc = Process.Start(new ProcessStartInfo(exe, args)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            _componentProc = proc;
+            if (proc != null)
+            {
+                _ = proc.WaitForExitAsync().ContinueWith(_ =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (ReferenceEquals(_componentProc, proc)) _componentProc = null;
+                        try { proc.Dispose(); } catch { }
+                        _engine?.MarkUsed();
+                    }));
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("open components child failed: " + ex.Message);
+        }
     }
 
     private void OpenSettings()
     {
         Log("OpenSettings enter");
-        // 已经开着就拉到前面，别开第二个
+
+        // 已经在独立子进程里开着就拉到前面，别开第二个
+        if (_settingsProc is { HasExited: false })
+        {
+            Log("OpenSettings: child already open, activate");
+            if (_settingsChildHwnd != IntPtr.Zero)
+            {
+                ShowWindow(_settingsChildHwnd, SW_RESTORE);
+                SetForegroundWindow(_settingsChildHwnd);
+            }
+            else
+            {
+                BringProcessWindowToFront(_settingsProc);
+            }
+            return;
+        }
+
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            OpenSettingsInProcessFallback();
+            return;
+        }
+
+        var popupTopmost = _popup?.Topmost ?? false;
+        if (_popup != null) _popup.Topmost = false;
+        _popup?.SlowStreaming();
+
+        try
+        {
+            var proc = Process.Start(new ProcessStartInfo(exe, "--settings-child")
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            if (proc == null)
+            {
+                if (_popup != null) _popup.Topmost = popupTopmost;
+                _popup?.ResumeStreaming();
+                return;
+            }
+
+            _settingsProc = proc;
+            _settingsChildHwnd = IntPtr.Zero;
+            Log($"OpenSettings: child pid={proc.Id}");
+
+            _ = proc.WaitForExitAsync().ContinueWith(_ =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (ReferenceEquals(_settingsProc, proc))
+                    {
+                        _settingsProc = null;
+                        _settingsChildHwnd = IntPtr.Zero;
+                    }
+                    try { proc.Dispose(); } catch { }
+
+                    if (_popup != null) _popup.Topmost = popupTopmost;
+                    _popup?.ResumeStreaming();
+                    _popup?.SetSettingsWindow(IntPtr.Zero);
+                    ApplyReloadedConfig();
+                }));
+            });
+        }
+        catch (Exception ex)
+        {
+            Log("OpenSettings child failed, fallback in-process: " + ex.Message);
+            if (_popup != null) _popup.Topmost = popupTopmost;
+            _popup?.ResumeStreaming();
+            OpenSettingsInProcessFallback();
+        }
+    }
+
+    private void OpenSettingsInProcessFallback()
+    {
         if (_settingsWin is { IsVisible: true })
         {
-            Log("OpenSettings: already open, activate");
             _settingsWin.Activate();
             return;
         }
 
-        var oldStyle = _config.TrayIconStyle;
-        var oldVariant = _config.EngineVariant;
-
         var popupTopmost = _popup?.Topmost ?? false;
         if (_popup != null) _popup.Topmost = false;
-
-        // 打开设置窗口前，把浮窗刷屏降到 500ms：给设置窗口首渲染让出
-        // UI 线程（消除卡顿），同时译文仍在缓慢流动，不会冻结。
         _popup?.SlowStreaming();
 
         var win = new SettingsWindow(_config, _engine!)
         {
             Owner = null,
             WindowStartupLocation = WindowStartupLocation.CenterScreen,
-            // 设置窗口也 Topmost：浮窗是 Topmost 的，两个都置顶时后 Show 的在上，
-            // 这样设置窗口才能盖住浮窗。关闭时在 Closed 里还原为普通层级。
             Topmost = true,
         };
         _settingsWin = win;
-        Log("OpenSettings: window created");
 
         win.Closed += (_, _) =>
         {
             _settingsWin = null;
-            win.Topmost = false;   // 关闭后取消置顶，别一直盖着别的程序
-
+            win.Topmost = false;
             if (_popup != null) _popup.Topmost = popupTopmost;
-            _popup?.ResumeStreaming();   // 恢复浮窗刷屏，补上暂停期间的内容
-            _popup?.SetSettingsWindow(IntPtr.Zero);   // 清空设置页句柄
-            RegisterHotkeys();
-
-            if (_config.TrayIconStyle != oldStyle && _tray != null)
-            {
-                var previous = _tray.Icon;
-                _tray.Icon = CreateTrayIcon(_config.TrayIconStyle);
-                try { previous?.Dispose(); } catch { }
-            }
-
-            if (!string.Equals(_config.EngineVariant, oldVariant, StringComparison.OrdinalIgnoreCase))
-            {
-                Log($"engine variant -> {_config.EngineVariant}");
-                _engine?.Unload();
-                _engine?.SwitchEngine(_config.EngineVariant);
-                Log($"engine dir now {_engine?.EngineDir}");
-            }
-
-            AutoStartService.Sync(_config.AutoStart);
+            _popup?.ResumeStreaming();
+            _popup?.SetSettingsWindow(IntPtr.Zero);
+            ApplyReloadedConfig();
         };
 
         win.Show();
-        Log("OpenSettings: shown");
-
-        // 把设置页句柄告诉浮窗：前台切到设置页不算浮窗失焦
-        var settingsHwnd = new System.Windows.Interop.WindowInteropHelper(win).Handle;
+        var settingsHwnd = new WindowInteropHelper(win).Handle;
         _popup?.SetSettingsWindow(settingsHwnd);
-
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            try
-            {
-                win.Activate();
-                win.Topmost = true;
-                win.Topmost = false;
-                win.Activate();
-            }
-            catch { }
-        }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
 
     /// <summary>朗读结束（播放完或手动停止），恢复喇叭按钮状态。</summary>
     private void OnSpeechStopped()
     {
-        try { _popup?.SetSpeaking(false); } catch { }
+        // MediaPlayer 的播放结束事件来自后台线程，改按钮必须回到 UI 线程，
+        // 否则会抛跨线程异常被吞掉，喇叭按钮播完后一直停在“朗读中”的高亮状态。
+        try
+        {
+            if (Dispatcher.CheckAccess()) _popup?.SetSpeaking(false);
+            else Dispatcher.BeginInvoke(new Action(() => { try { _popup?.SetSpeaking(false); } catch { } }));
+        }
+        catch { }
     }
 
     /// <summary>释放所有共享资源，退出和正常清理都走这里，避免遗漏或重复。</summary>
     private void CleanupResources()
     {
         _idleTimer?.Stop();
+        try { _ipc?.Dispose(); } catch { }
+        _ipc = null;
+        try { if (_settingsProc is { HasExited: false }) _settingsProc.Kill(); } catch { }
+        try { _settingsProc?.Dispose(); } catch { }
+        _settingsProc = null;
+        try { if (_inputProc is { HasExited: false }) _inputProc.Kill(); } catch { }
+        try { _inputProc?.Dispose(); } catch { }
+        _inputProc = null;
+        try { if (_componentProc is { HasExited: false }) _componentProc.Kill(); } catch { }
+        try { _componentProc?.Dispose(); } catch { }
+        _componentProc = null;
         try { _speech?.Stop(); } catch { }
         try { _speech?.Dispose(); } catch { }
         _engine?.Dispose();

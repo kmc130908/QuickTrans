@@ -71,10 +71,10 @@ public static class OcrService
         if (engine == null)
             return (false, "", "系统没有可用的 OCR 语言包。到「设置 → 时间和语言 → 语言」里给中文安装「光学字符识别」组件。");
 
-        byte[] png;
+        SoftwareBitmap bitmap;
         try
         {
-            png = CaptureRegionAsPng(x, y, width, height);
+            bitmap = CaptureRegion(x, y, width, height, (int)OcrEngine.MaxImageDimension);
         }
         catch (Exception ex)
         {
@@ -83,30 +83,19 @@ public static class OcrService
 
         try
         {
-            using var ras = new InMemoryRandomAccessStream();
-
-            using (var output = ras.GetOutputStreamAt(0))
+            using (bitmap)
             {
-                using var writer = new DataWriter(output);
-                writer.WriteBytes(png);
-                await writer.StoreAsync();
-                await output.FlushAsync();
+                var result = await engine.RecognizeAsync(bitmap);
+
+                var lines = result.Lines
+                    .Select(l => l.Text.Trim())
+                    .Where(t => t.Length > 0);
+
+                var text = string.Join(Environment.NewLine, lines).Trim();
+                return text.Length == 0
+                    ? (false, "", "没有识别到文字，换个区域或放大一点再试")
+                    : (true, text, "");
             }
-
-            ras.Seek(0);
-            var decoder = await BitmapDecoder.CreateAsync(ras);
-            using var bitmap = await decoder.GetSoftwareBitmapAsync();
-
-            var result = await engine.RecognizeAsync(bitmap);
-
-            var lines = result.Lines
-                .Select(l => l.Text.Trim())
-                .Where(t => t.Length > 0);
-
-            var text = string.Join(Environment.NewLine, lines).Trim();
-            return text.Length == 0
-                ? (false, "", "没有识别到文字，换个区域或放大一点再试")
-                : (true, text, "");
         }
         catch (Exception ex)
         {
@@ -114,8 +103,15 @@ public static class OcrService
         }
     }
 
-    /// <summary>抓屏并放大，小字放大后识别率明显更高。</summary>
-    private static byte[] CaptureRegionAsPng(int x, int y, int width, int height)
+    /// <summary>小选区才放大的像素上限（约 250 万像素，相当于 1600×1560）。</summary>
+    private const long UpscalePixelLimit = 2_500_000;
+
+    /// <summary>
+    /// 抓屏并直接生成 SoftwareBitmap：不再经过“放大位图 → PNG 编码 → 内存流 → 解码”的链路，
+    /// 同一张图不会在内存里同时存在好几份。小字选区放大 2 倍识别率更高；
+    /// 大选区放大收益很小却会把内存涨 4 倍，保持原尺寸。
+    /// </summary>
+    private static SoftwareBitmap CaptureRegion(int x, int y, int width, int height, int maxDimension)
     {
         using var src = new Bitmap(width, height, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(src))
@@ -123,7 +119,15 @@ public static class OcrService
             g.CopyFromScreen(x, y, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
         }
 
-        const int scale = 2;
+        var scale = (long)width * height <= UpscalePixelLimit ? 2 : 1;
+        if (maxDimension > 0)
+        {
+            while (scale > 1 && Math.Max(width, height) * scale > maxDimension) scale--;
+        }
+
+        if (scale == 1)
+            return ToSoftwareBitmap(src);
+
         using var big = new Bitmap(width * scale, height * scale, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(big))
         {
@@ -133,8 +137,35 @@ public static class OcrService
             g.DrawImage(src, 0, 0, big.Width, big.Height);
         }
 
-        using var ms = new MemoryStream();
-        big.Save(ms, ImageFormat.Png);
-        return ms.ToArray();
+        return ToSoftwareBitmap(big);
+    }
+
+    private static SoftwareBitmap ToSoftwareBitmap(Bitmap bmp)
+    {
+        var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+        var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var rowBytes = bmp.Width * 4;
+            var buffer = new byte[rowBytes * bmp.Height];
+
+            // Stride 对 32bpp 恒等于 width*4，这里仍按行拷贝以防万一
+            for (var row = 0; row < bmp.Height; row++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(
+                    IntPtr.Add(data.Scan0, row * data.Stride), buffer, row * rowBytes, rowBytes);
+            }
+
+            // 屏幕抓图的 alpha 通道没有意义，统一置为不透明，避免被当成透明像素
+            for (var i = 3; i < buffer.Length; i += 4) buffer[i] = 0xFF;
+
+            return SoftwareBitmap.CreateCopyFromBuffer(
+                System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions.AsBuffer(buffer),
+                BitmapPixelFormat.Bgra8, bmp.Width, bmp.Height, BitmapAlphaMode.Premultiplied);
+        }
+        finally
+        {
+            bmp.UnlockBits(data);
+        }
     }
 }

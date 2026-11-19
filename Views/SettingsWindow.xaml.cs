@@ -28,6 +28,8 @@ public partial class SettingsWindow : Window
 {
     private readonly AppConfig _config;
     private readonly EngineManager _engine;
+    private readonly bool _childMode;
+    private string? _loadedModelPathOverride;
     private readonly ObservableCollection<ModelRow> _rows = new();
     private readonly List<LangOption> _langOptions = new();
     private bool _gpuOk;
@@ -47,12 +49,14 @@ public partial class SettingsWindow : Window
 
     private static readonly string[] MinuteOptions = { "0.5", "1", "2", "3", "5", "10", "15", "20", "30" };
 
-    public SettingsWindow(AppConfig config, EngineManager engine)
+    public SettingsWindow(AppConfig config, EngineManager engine, bool childMode = false, string? loadedModelPath = null)
     {
         InitializeComponent();
 
         _config = config;
         _engine = engine;
+        _childMode = childMode;
+        _loadedModelPathOverride = loadedModelPath;
 
         ModelList.ItemsSource = _rows;
 
@@ -225,6 +229,21 @@ public partial class SettingsWindow : Window
 
             if (ok != MessageBoxResult.OK) return;
 
+            if (_childMode)
+            {
+                // 子进程模式下由主进程发起替换并退出，避免主进程仍占着 QuickTrans.exe 导致替换失败
+                var reply = await AppIpcClient.SendAsync("APPLY_UPDATE");
+                if (string.Equals(reply, "OK", StringComparison.Ordinal))
+                {
+                    Close();
+                }
+                else
+                {
+                    UpdateHint.Text = "启动更新程序失败，请手动下载覆盖。";
+                }
+                return;
+            }
+
             if (UpdateService.ApplyAndRestart())
             {
                 Application.Current.Shutdown();
@@ -283,8 +302,8 @@ public partial class SettingsWindow : Window
         var progress = new Progress<(long Received, long Total)>(p =>
         {
             UpdateHint.Text = p.Total > 0
-                ? $"正在下载 {info.Version}：{p.Received / 1024.0 / 1024:F0} / {p.Total / 1024.0 / 1024:F0} MB"
-                : "正在下载…";
+                ? $"正在下载 {info.Version}：{p.Received / 1024.0 / 1024:F1} / {p.Total / 1024.0 / 1024:F1} MB"
+                : $"正在下载 {info.Version}：{p.Received / 1024.0 / 1024:F1} MB";
         });
 
         try
@@ -309,6 +328,16 @@ public partial class SettingsWindow : Window
     private void OnOpenComponentsClick(object sender, RoutedEventArgs e)
     {
         var win = new ComponentWindow(new ComponentManager(AppContext.BaseDirectory))
+        {
+            Owner = this,
+        };
+        win.ShowDialog();
+    }
+
+    /// <summary>重新打开首次使用引导教程。</summary>
+    private void OnOpenWelcomeClick(object sender, RoutedEventArgs e)
+    {
+        var win = new WelcomeWindow
         {
             Owner = this,
         };
@@ -402,6 +431,7 @@ public partial class SettingsWindow : Window
         ApplyFormToConfig();
         _config.ActiveProfile = p.Name;
         _config.Save();
+        NotifyMainReload();
 
         SetDirty(false);
         SaveHint.Text = $"已切换到「{p.Name}」";
@@ -621,9 +651,23 @@ public partial class SettingsWindow : Window
         UpdateTtsRateLabel();
 
         // 关于与更新
-        VersionText.Text = UpdateService.CurrentVersion;
+        VersionText.Text = UpdateService.IsLiteBuild
+            ? $"{UpdateService.CurrentVersion}（轻量版）"
+            : UpdateService.CurrentVersion;
         ShowSettingsOnStartupBox.IsChecked = _config.ShowSettingsOnStartup;
-        UpdateHint.Text = "";
+
+        if (UpdateService.HasPendingUpdate())
+        {
+            _updateDownloaded = true;
+            CheckUpdateButton.Content = "重启并更新";
+            UpdateHint.Text = "新版本已下载完成，点「重启并更新」生效。";
+        }
+        else
+        {
+            _updateDownloaded = false;
+            CheckUpdateButton.Content = "检查更新";
+            UpdateHint.Text = "";
+        }
 
         HotkeyBox.Text = _config.Hotkey;
         OcrHotkeyBox.Text = _config.OcrHotkey;
@@ -641,6 +685,7 @@ public partial class SettingsWindow : Window
         CpuRadio.IsChecked = !_config.UseGpu;
 
         AutoStartBox.IsChecked = AutoStartService.IsEnabled();
+        PrewarmModelBox.IsChecked = _config.PrewarmModel;
         EngineVariantBox.SelectedIndex = string.Equals(_config.EngineVariant, "cpu", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         ApplyEngineVariantState();
 
@@ -696,12 +741,12 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        // 每次都重新检测：引擎版本（gpu/cpu）切换后 GPU 能力会变，
-        // 缓存旧结果会导致「切回 GPU 引擎后仍显示未检测到 GPU」。
+        // 每次都重新检测：引擎版本（gpu/cpu）切换后 GPU 能力会变（底层按引擎目录和文件版本缓存）。
         EngineStatus.Text = "正在检测显卡…";
-        _gpuOk = await Task.Run(() => EngineManager.DetectGpu(_engine.EngineDir));
+        var (gpuOk, backend, deviceName) = await Task.Run(() => EngineManager.DetectGpuInfo(_engine.EngineDir));
+        _gpuOk = gpuOk;
 
-        // 只有一套引擎时不提供切换；引擎没有 CUDA 时不提供设备选择
+        // 只有一套引擎时不提供切换；引擎没有可用 GPU 时不提供设备选择
         var (hasGpuEngine, hasCpuEngine) = EngineManager.DetectVariants(_engine.BaseDir);
         var canSwitch = hasGpuEngine && hasCpuEngine;
         EngineVariantPanel.Visibility = canSwitch ? Visibility.Visible : Visibility.Collapsed;
@@ -716,28 +761,34 @@ public partial class SettingsWindow : Window
             CpuRadio.IsChecked = true;
         }
 
-        // 纯 CPU 精简版：只有一套引擎且它没有 CUDA，不是"检测不到显卡"
-        var (_, hasCpuEngineDir) = EngineManager.DetectVariants(_engine.BaseDir);
-        if (!_gpuOk && !hasCpuEngineDir)
+        // 纯 CPU 精简版：引擎目录里本来就没有 GPU 后端，不是"检测不到显卡"
+        if (!_gpuOk && !EngineManager.HasGpuBackend(_engine.EngineDir))
         {
             EngineStatus.Text = $"✓ 引擎就绪（CPU 精简版）· 模型目录：{_engine.ModelsDir}";
             EngineStatus.Foreground = System.Windows.Media.Brushes.SeaGreen;
             return;
         }
 
-        EngineStatus.Text = _gpuOk
-            ? $"✓ 引擎就绪，已检测到 GPU 加速 · 模型目录：{_engine.ModelsDir}"
-            : $"⚠ 引擎就绪，但未检测到 GPU，将使用 CPU 推理（会慢很多）· 模型目录：{_engine.ModelsDir}";
-        EngineStatus.Foreground = _gpuOk
-            ? System.Windows.Media.Brushes.SeaGreen
-            : System.Windows.Media.Brushes.DarkOrange;
+        if (_gpuOk)
+        {
+            var gpuLabel = string.IsNullOrWhiteSpace(deviceName)
+                ? $"{backend} GPU 加速"
+                : $"{backend} GPU：{deviceName}";
+            EngineStatus.Text = $"✓ 引擎就绪（{gpuLabel}）· 模型目录：{_engine.ModelsDir}";
+            EngineStatus.Foreground = System.Windows.Media.Brushes.SeaGreen;
+        }
+        else
+        {
+            EngineStatus.Text = $"⚠ 引擎就绪（{backend}），但未检测到可用 GPU，将使用 CPU 推理 · 模型目录：{_engine.ModelsDir}";
+            EngineStatus.Foreground = System.Windows.Media.Brushes.DarkOrange;
+        }
     }
 
     private void RefreshModels(string? highlight = null)
     {
         var current = highlight ?? _config.SelectedModel;
         var models = _engine.ScanModels();
-        var loadedPath = _engine.LoadedModelPath;
+        var loadedPath = _childMode ? _loadedModelPathOverride : _engine.LoadedModelPath;
 
         _rows.Clear();
         foreach (var m in models)
@@ -808,11 +859,32 @@ public partial class SettingsWindow : Window
 
         try
         {
-            var layers = _config.UseGpu ? Math.Max(1, _config.GpuLayers) : 0;
-            var (ok, msg) = await _engine.LoadAsync(row.FilePath, layers, _config.ContextSize);
-            SaveHint.Text = ok
-                ? $"✓ {row.DisplayName} 已加载，可以直接划词了"
-                : "加载失败：" + msg;
+            if (_childMode)
+            {
+                // 通知主进程加载模型，由主进程持有 llama-server（关掉设置页后模型继续可用）
+                _config.Save();
+                var reply = await AppIpcClient.SendAsync("LOAD_MODEL\t" + row.FilePath, connectTimeoutMs: 2000);
+                if (reply != null && reply.StartsWith("OK\t", StringComparison.Ordinal))
+                {
+                    _loadedModelPathOverride = row.FilePath;
+                    SaveHint.Text = $"✓ {row.DisplayName} 已加载，可以直接划词了";
+                }
+                else
+                {
+                    var err = reply != null && reply.StartsWith("ERR\t", StringComparison.Ordinal)
+                        ? reply[4..]
+                        : "无法连接到主程序，请重试";
+                    SaveHint.Text = "加载失败：" + err;
+                }
+            }
+            else
+            {
+                var layers = _config.UseGpu ? Math.Max(1, _config.GpuLayers) : 0;
+                var (ok, msg) = await _engine.LoadAsync(row.FilePath, layers, _config.ContextSize);
+                SaveHint.Text = ok
+                    ? $"✓ {row.DisplayName} 已加载，可以直接划词了"
+                    : "加载失败：" + msg;
+            }
         }
         catch (Exception ex)
         {
@@ -956,6 +1028,7 @@ public partial class SettingsWindow : Window
             ? Math.Clamp(tsec, 1, 3600)
             : 30;
         _config.AutoStart = AutoStartBox.IsChecked == true;
+        _config.PrewarmModel = PrewarmModelBox.IsChecked == true;
 
         // 语音朗读
         _config.TtsEnabled = TtsEnabledBox.IsChecked == true;
@@ -1009,16 +1082,24 @@ public partial class SettingsWindow : Window
 
         _config.Save();
 
-        // 浮窗的自动关闭参数是静态属性，创建浮窗时才读一次。
-        // 保存设置后立刻同步，让已显示的浮窗也立即生效。
-        QuickTrans.Views.PopupWindow.AutoCloseEnabled = _config.PopupAutoClose;
-        QuickTrans.Views.PopupWindow.AutoCloseSeconds = _config.PopupAutoCloseSeconds;
-        QuickTrans.Views.PopupWindow.AutoClosePauseOnHover = _config.PopupAutoClosePauseOnHover;
-        QuickTrans.Views.PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
-        QuickTrans.Views.PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
+        if (_childMode)
+        {
+            // 通知主进程立刻重载 config.json（同步热键、托盘图标、浮窗参数、推理设备等）
+            NotifyMainReload();
+        }
+        else
+        {
+            // 浮窗的自动关闭参数是静态属性，创建浮窗时才读一次。
+            // 保存设置后立刻同步，让已显示的浮窗也立即生效。
+            QuickTrans.Views.PopupWindow.AutoCloseEnabled = _config.PopupAutoClose;
+            QuickTrans.Views.PopupWindow.AutoCloseSeconds = _config.PopupAutoCloseSeconds;
+            QuickTrans.Views.PopupWindow.AutoClosePauseOnHover = _config.PopupAutoClosePauseOnHover;
+            QuickTrans.Views.PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
+            QuickTrans.Views.PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
 
-        // 换了推理设备就先把当前模型卸掉，下次翻译会用新设备重新加载
-        if (deviceChanged && _engine.IsRunning) _engine.Unload();
+            // 换了推理设备就先把当前模型卸掉，下次翻译会用新设备重新加载
+            if (deviceChanged && _engine.IsRunning) _engine.Unload();
+        }
 
         SetDirty(false);
         SaveHint.Text = "✓ 已保存，设置立即生效";
@@ -1027,6 +1108,11 @@ public partial class SettingsWindow : Window
 
         // 保存后把快照也刷新，之后点取消撤回的是这次保存之后的变化
         _snapshot = _config.Clone();
+    }
+
+    private void NotifyMainReload()
+    {
+        if (_childMode) _ = AppIpcClient.SendAsync("RELOAD_CONFIG");
     }
 
     private void OnCancelClick(object sender, RoutedEventArgs e)
@@ -1038,7 +1124,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        DialogResult = false;
+        try { DialogResult = false; } catch { /* 非模态 Show() 打开时不能设 DialogResult */ }
         Close();
     }
 
@@ -1047,13 +1133,14 @@ public partial class SettingsWindow : Window
     {
         if (_snapshot == null)
         {
-            DialogResult = false;
+            try { DialogResult = false; } catch { }
             Close();
             return;
         }
 
         _config.CopyFrom(_snapshot);
         _config.Save();
+        NotifyMainReload();
 
         // 重新填充控件，让界面显示回滚后的值
         _suppressDirty = true;

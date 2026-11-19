@@ -1,5 +1,10 @@
 {
-  "version": "1.2.0",
-  "url": "https://github.com/kmc130908/QuickTrans/releases/download/v1.2.0/QuickTrans.exe",
-  "notes": "浮窗交互全面优化：翻译中不再卡顿、流式输出更顺滑、操作栏位置固定；朗读可随时停止；自动关闭逻辑重构（切走才关闭、新增定时关闭）。"
+  "version": "2.0.0",
+  "url": "https://github.com/kmc130908/QuickTrans/releases/download/v2.0.0/QuickTrans.exe",
+  "sha256": "41842086E8CFFE07A4A5ECCEC86385905E7D877F9723826673FB525C209CF774",
+  "zipUrl": "https://github.com/kmc130908/QuickTrans/releases/download/v2.0.0/QuickTrans-win-x64-2.0.0.zip",
+  "zipSha256": "218378921C8C424C053CD9DD3E70122D0E98E30CD152E40102F4484882364333",
+  "liteZipUrl": "https://github.com/kmc130908/QuickTrans/releases/download/v2.0.0/QuickTrans-Lite-win-x64-2.0.0.zip",
+  "liteZipSha256": "CF6CBCA9DC169BF42D7EDFDFF8EACD54859BA29B49E5DD4B9020DF8A5A913730",
+  "notes": "待机内存大幅下降（常驻约 17–42MB），新增 Vulkan 通用 GPU 版（N/A/I 卡通用，安装包缩小约 90%）与 .NET 8 轻量版（最小 15MB），设置页/手动输入独立子进程退出即释放内存，并修复多项已知问题。"
 }

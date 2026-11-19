@@ -1,12 +1,14 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using QuickTrans.Services;
 
 namespace QuickTrans.Views;
 
 /// <summary>
 /// 首次使用的三页引导：划词翻译 / 截图与手输 / 模型与加速。
-/// 只在第一次启动时出现，看完或跳过都算已读。
+/// 只在第一次启动时出现，看完或跳过都算已读；也可在设置页随时重新打开。
 /// </summary>
 public partial class WelcomeWindow : Window
 {
@@ -16,8 +18,30 @@ public partial class WelcomeWindow : Window
     public WelcomeWindow()
     {
         InitializeComponent();
+        ApplyEngineHint();
         BuildDots();
         ShowPage(0);
+    }
+
+    /// <summary>根据当前内置引擎类型（Vulkan / CUDA / CPU）动态展示加速说明。</summary>
+    private void ApplyEngineHint()
+    {
+        var backend = EngineManager.GetGpuBackendKind(Path.Combine(AppContext.BaseDirectory, "engine"));
+        if (string.Equals(backend, "Vulkan", StringComparison.OrdinalIgnoreCase))
+        {
+            AccelTitle.Text = "⚡  已内置 Vulkan 通用 GPU 加速";
+            AccelDesc.Text = "NVIDIA / AMD / Intel 显卡均可自动加速，无独显或想省显存时也可在设置里切回 CPU，无需再下 GPU 引擎。不想下模型也可直接用在线 API。";
+        }
+        else if (string.Equals(backend, "CUDA", StringComparison.OrdinalIgnoreCase))
+        {
+            AccelTitle.Text = "⚡  已内置 CUDA GPU 加速";
+            AccelDesc.Text = "检测到 NVIDIA 显卡会自动启用 GPU 加速，也可在设置里随时切回 CPU。不想下模型也可直接配置在线翻译接口。";
+        }
+        else
+        {
+            AccelTitle.Text = "⚡  GPU 加速或在线接口（可选）";
+            AccelDesc.Text = "当前为纯 CPU 精简版，装完即可用；想要更快可在组件管理里补充 GPU 引擎，或在「设置 → 在线接口」填入 DeepSeek / 百度 / 有道 / 谷歌接口。";
+        }
     }
 
     private void BuildDots()

@@ -85,7 +85,8 @@ public static class DefaultManifest
                 MirrorUrl = $"https://ghfast.top/{RepoBase}/engine-cuda.zip",
                 Target = "engine",
                 ArchiveKind = "zip",
-                CheckFile = "llama-server.exe",
+                // 用 ggml-cuda.dll 判定是否已安装 CUDA 引擎，避免把 CPU/Vulkan 版的 llama-server.exe 误判为已装 CUDA
+                CheckFile = "ggml-cuda.dll",
             },
             new()
             {
