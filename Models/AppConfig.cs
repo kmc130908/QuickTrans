@@ -13,6 +13,36 @@ public sealed class AppConfig
     /// <summary>截图 OCR 热键。</summary>
     public string OcrHotkey { get; set; } = "Alt+S";
 
+    /// <summary>一键替换翻译热键（翻译选中文字并直接粘贴替换原文）。</summary>
+    public string ReplaceHotkey { get; set; } = "Alt+R";
+
+    /// <summary>是否在快速连按两次 Ctrl+C 时自动触发划词翻译。</summary>
+    public bool DoubleCtrlCEnabled { get; set; } = false;
+
+    /// <summary>是否自动合并 PDF/文档划词与截图中的多余单行换行。</summary>
+    public bool SmartJoinLines { get; set; } = true;
+
+    /// <summary>选中单个英文单词时自动进入词典模式（输出音标、词性、释义和例句）。仅本地模型与 OpenAI 接口生效。</summary>
+    public bool WordDictEnabled { get; set; } = true;
+
+    /// <summary>界面主题：system = 跟随系统，light = 浅色，dark = 深色。</summary>
+    public string Theme { get; set; } = "system";
+
+    /// <summary>是否保存最近翻译历史记录（最多 100 条，本地 history.json）。</summary>
+    public bool HistoryEnabled { get; set; } = true;
+
+    /// <summary>全屏游戏时自动屏蔽翻译热键（独占全屏与无边框全屏游戏）。</summary>
+    public bool DndFullscreenGame { get; set; } = false;
+
+    /// <summary>全屏视频时自动屏蔽翻译热键（浏览器及常见视频播放器全屏）。</summary>
+    public bool DndFullscreenVideo { get; set; } = false;
+
+    /// <summary>是否启用应用黑名单（黑名单程序在前台时屏蔽翻译热键）。</summary>
+    public bool DndBlacklistEnabled { get; set; } = true;
+
+    /// <summary>黑名单进程名列表（不区分大小写，如 "Weixin" / "YuanShen"）。</summary>
+    public List<string> DndBlacklistProcesses { get; set; } = new();
+
     /// <summary>翻译通道：local = 本地模型，api = 自定义在线接口。</summary>
     public string Engine { get; set; } = "local";
 
@@ -120,6 +150,13 @@ public sealed class AppConfig
     /// <summary>启动时预加载上次用的模型。默认关闭以降低待机内存占用，首次翻译时按需加载。</summary>
     public bool PrewarmModel { get; set; } = false;
 
+    /// <summary>
+    /// 极低待机内存模式：划词浮窗与截图 OCR 在独立子进程运行，关闭浮窗后立即释放
+    /// WPF 渲染缓存与系统组件内存，主程序待机回落到约 17–20MB（弹出约 0.4 秒）。
+    /// 关闭后改为同进程浮窗（约 0.03 秒瞬弹，翻译后主程序常驻约 42MB）。
+    /// </summary>
+    public bool PopupIsolateProcess { get; set; } = true;
+
     [JsonIgnore]
     public static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "config.json");
 
@@ -140,6 +177,7 @@ public sealed class AppConfig
                 {
                     if (cfg.QuickLanguages == null || cfg.QuickLanguages.Count == 0)
                         cfg.QuickLanguages = new List<string> { "简体中文", "英语", "日语", "韩语" };
+                    cfg.DndBlacklistProcesses ??= new List<string>();
                     return cfg;
                 }
             }

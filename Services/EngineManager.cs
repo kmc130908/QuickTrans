@@ -262,14 +262,46 @@ public sealed class EngineManager : IDisposable
         return "";
     }
 
+    /// <summary>
+    /// 基础 GGUF 文件头校验（前 4 字节必须为 "GGUF" 且体积合理）。
+    /// 不限制用户自行放置的第三方模型，仅防止损坏/截断/误下成网页的文件导致引擎崩溃。
+    /// </summary>
+    public static (bool Ok, string Reason) ValidateGgufHeader(string filePath)
+    {
+        try
+        {
+            if (!File.Exists(filePath)) return (false, "模型文件不存在");
+            var fi = new FileInfo(filePath);
+            if (fi.Length < 64 * 1024)
+                return (false, "模型文件体积过小，可能未下载完整或已损坏。");
+
+            Span<byte> magic = stackalloc byte[4];
+            using var fs = File.OpenRead(filePath);
+            if (fs.Read(magic) < 4
+                || magic[0] != (byte)'G'
+                || magic[1] != (byte)'G'
+                || magic[2] != (byte)'U'
+                || magic[3] != (byte)'F')
+            {
+                return (false, "模型文件格式无效（缺少 GGUF 文件头），可能下载损坏或不是有效的 .gguf 模型。");
+            }
+            return (true, "");
+        }
+        catch (Exception ex)
+        {
+            return (false, "无法读取模型文件：" + ex.Message);
+        }
+    }
+
     /// <summary>加载指定模型。会先卸掉正在跑的那个。</summary>
     public async Task<(bool Ok, string Message)> LoadAsync(string ggufPath, int gpuLayers, int ctx, CancellationToken ct = default)
     {
         if (!EngineReady)
             return (false, "引擎文件缺失，engine 目录下找不到 llama-server.exe");
 
-        if (!File.Exists(ggufPath))
-            return (false, "模型文件不存在");
+        var check = ValidateGgufHeader(ggufPath);
+        if (!check.Ok)
+            return (false, check.Reason);
 
         // 串行化加载：别的调用方正在加载时在这里排队，等它加载完直接复用结果
         await _loadGate.WaitAsync(ct);
@@ -344,10 +376,9 @@ public sealed class EngineManager : IDisposable
         if (useExtraArgs)
         {
             args += " -np 1 --cache-ram 0";
-            // 双显卡笔记本（如独显 + 核显）跑 Vulkan 时默认会按显存比例把模型拆到核显上，
-            // 实测速度会慢 3 倍；-sm none 只用主 GPU（llama.cpp 优先把独显排在第一位），
-            // 单卡机器下无副作用。
-            if (gpuLayers > 0) args += " -sm none";
+            // GPU 模式：-sm none 只用主 GPU，避免双显卡笔记本把模型拆到核显拖慢 3 倍；
+            // CPU 模式：-dev none 禁用 GPU 后端初始化，实现 Vulkan/CUDA 引擎下 CPU 推理 0MB 显存占用。
+            args += gpuLayers > 0 ? " -sm none" : " -dev none";
         }
 
         var psi = new ProcessStartInfo(Path.Combine(EngineDir, "llama-server.exe"), args)

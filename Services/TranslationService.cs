@@ -37,10 +37,100 @@ public static class TranslationService
         _ => name,
     };
 
+    /// <summary>当前配置是否支持 Prompt 级功能（单词词典、润色、解释）。仅本地模型与 OpenAI 兼容接口支持。</summary>
+    public static bool SupportsPromptModes(AppConfig cfg)
+    {
+        if (!string.Equals(cfg.Engine, "api", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return !string.Equals(cfg.ApiType, "baidu", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(cfg.ApiType, "youdao", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(cfg.ApiType, "google", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>判断选中文本是否为单个英文单词（不含空格和换行），用于触发词典模式。</summary>
+    public static bool IsSingleEnglishWord(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var s = text.Trim();
+        if (s.Length < 2 || s.Length > 32) return false;
+
+        var hasLetter = false;
+        var sepCount = 0;
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+            {
+                hasLetter = true;
+            }
+            else if ((c == '-' || c == '\'') && i > 0 && i < s.Length - 1)
+            {
+                sepCount++;
+                if (sepCount > 2) return false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return hasLetter;
+    }
+
     /// <summary>Hy-MT2 官方推荐的默认翻译指令。</summary>
-    public static string BuildPrompt(string text, string targetLanguage)
+    public static string BuildPrompt(string text, string targetLanguage, string mode = "translate", bool wordDict = false)
     {
         var lang = MapLanguage(targetLanguage);
+
+        if (string.Equals(mode, "polish", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Rewrite and polish the following text to make it natural, clear, and idiomatic in its original language. " +
+                   "Reply with the polished text only, without explanations or preamble.\n\n" +
+                   text;
+        }
+
+        if (string.Equals(mode, "explain", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Explain the following text, term, or code snippet concisely in {lang}. " +
+                   "Be direct and structured, without unnecessary preamble.\n\n" +
+                   text;
+        }
+
+        if (wordDict && IsSingleEnglishWord(text))
+        {
+            var word = text.Trim();
+            if (string.Equals(targetLanguage, "简体中文", StringComparison.Ordinal))
+            {
+                return $"参照下面的词典格式，解释英文单词 \"{word}\"（简体中文）。只输出结果，不要多余说明。\n\n" +
+                       "示例（apple）：\n" +
+                       "音标：/ˈæp.əl/\n" +
+                       "词性：n.\n" +
+                       "释义：苹果；苹果树\n" +
+                       "例句：She ate an apple for breakfast.（她早餐吃了一个苹果。）\n\n" +
+                       $"现在请解释 \"{word}\"：";
+            }
+
+            if (string.Equals(targetLanguage, "繁体中文", StringComparison.Ordinal)
+                || string.Equals(targetLanguage, "繁體中文", StringComparison.Ordinal))
+            {
+                return $"參照下面的詞典格式，解釋英文單詞 \"{word}\"（繁體中文）。只輸出結果，不要多餘說明。\n\n" +
+                       "範例（apple）：\n" +
+                       "音標：/ˈæp.əl/\n" +
+                       "詞性：n.\n" +
+                       "釋義：蘋果；蘋果樹\n" +
+                       "例句：She ate an apple for breakfast.（她早餐吃了一個蘋果。）\n\n" +
+                       $"現在請解釋 \"{word}\"：";
+            }
+
+            return $"Follow the exact 4-line dictionary format below to explain the English word \"{word}\" in {lang}. " +
+                   "Always include the IPA line. Reply with the entry only, no preamble.\n\n" +
+                   "Example (apple):\n" +
+                   "IPA: /ˈæp.əl/\n" +
+                   "POS: n.\n" +
+                   "Meaning: a round fruit with red or green skin\n" +
+                   "Example: She ate an apple for breakfast.\n\n" +
+                   $"Now explain \"{word}\":";
+        }
+
         // 措辞刻意严格：Qwen3 这类通用模型偶尔会复述指令或先说一句"翻译结果如下"，
         // 这里把要求讲死，配合后处理把漏网的套话剥掉。
         return $"Translate the following text into {lang}. " +
@@ -90,7 +180,9 @@ public static class TranslationService
         AppConfig cfg,
         string localBaseUrl,
         string target,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        string mode = "translate",
+        bool allowWordDict = false)
     {
         if (string.Equals(cfg.Engine, "api", StringComparison.OrdinalIgnoreCase))
         {
@@ -111,24 +203,24 @@ public static class TranslationService
             }
             else
             {
-                await foreach (var s in StreamOpenAiAsync(text, target, cfg, ct))
+                await foreach (var s in StreamOpenAiAsync(text, target, cfg, mode, allowWordDict, ct))
                     yield return s;
             }
         }
         else
         {
-            await foreach (var s in StreamLlamaAsync(text, target, localBaseUrl, ct))
+            await foreach (var s in StreamLlamaAsync(text, target, localBaseUrl, mode, allowWordDict, ct))
                 yield return s;
         }
     }
 
     private static async IAsyncEnumerable<string> StreamLlamaAsync(
-        string text, string target, string baseUrl,
+        string text, string target, string baseUrl, string mode, bool allowWordDict,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var payload = new
         {
-            messages = new object[] { new { role = "user", content = BuildPrompt(text, target) } },
+            messages = new object[] { new { role = "user", content = BuildPrompt(text, target, mode, allowWordDict) } },
             stream = true,
             n_predict = 1024,
             temperature = 0.7,
@@ -391,7 +483,7 @@ public static class TranslationService
     };
 
     private static async IAsyncEnumerable<string> StreamOpenAiAsync(
-        string text, string target, AppConfig cfg,
+        string text, string target, AppConfig cfg, string mode, bool allowWordDict,
         [EnumeratorCancellation] CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(cfg.ApiBaseUrl))
@@ -405,7 +497,7 @@ public static class TranslationService
         var payload = new
         {
             model = cfg.ApiModel,
-            messages = new object[] { new { role = "user", content = BuildPrompt(text, target) } },
+            messages = new object[] { new { role = "user", content = BuildPrompt(text, target, mode, allowWordDict) } },
             stream = true,
             temperature = 0.3,
             max_tokens = 1024,

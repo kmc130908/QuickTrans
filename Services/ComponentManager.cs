@@ -84,22 +84,32 @@ public sealed class ComponentManager
         if (lastError != null)
             throw new InvalidOperationException("下载失败：" + lastError.Message, lastError);
 
-        // 校验
+        // 校验：官方清单带 SHA256 时做强校验；模型文件额外检查 GGUF 文件头，防止镜像返回 HTML 错误页
         if (!string.IsNullOrWhiteSpace(item.Sha256))
         {
-            progress?.Report(new DownloadProgress(1, 1, "校验文件完整性"));
+            progress?.Report(new DownloadProgress(1, 1, "校验文件完整性 (SHA256)"));
             var actual = await ComputeSha256Async(temp, ct);
             if (!actual.Equals(item.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 try { File.Delete(temp); } catch { }
                 throw new InvalidOperationException(
-                    "下载的文件校验失败，可能不完整或被篡改，已删除。请重试。");
+                    "下载的文件 SHA256 校验失败，可能不完整或被篡改，已自动清理。请重试。");
+            }
+        }
+        else if (string.Equals(item.Kind, "model", StringComparison.OrdinalIgnoreCase))
+        {
+            progress?.Report(new DownloadProgress(1, 1, "校验模型文件头"));
+            var gguf = EngineManager.ValidateGgufHeader(temp);
+            if (!gguf.Ok)
+            {
+                try { File.Delete(temp); } catch { }
+                throw new InvalidOperationException(gguf.Reason + "（已自动清理损坏文件，请重试）");
             }
         }
 
         // GPU 引擎是解压到 engine 目录，会覆盖现有的 CPU 引擎。
         // 覆盖前先把 CPU 引擎复制一份到 engine-cpu，用户以后还能切回来。
-        if (item.Id == "engine-cuda")
+        if (item.Id is "engine-vulkan" or "engine-cuda")
             BackupCpuEngineIfNeeded(progress);
 
         progress?.Report(new DownloadProgress(1, 1, "正在安装"));

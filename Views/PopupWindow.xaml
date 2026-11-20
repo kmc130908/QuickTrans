@@ -11,53 +11,132 @@
         ResizeMode="NoResize"
         SizeToContent="Height"
         MaxHeight="700"
-        Width="520"
+        Width="540"
         Opacity="1"
         FontFamily="{StaticResource UiFont}"
         TextOptions.TextFormattingMode="Display"
         UseLayoutRounding="True">
 
-    <Border x:Name="RootBorder" CornerRadius="12" Background="#FFFFFF" BorderBrush="#DCDCE2" BorderThickness="1">
+    <Window.Resources>
+        <!-- 圆角胶囊按钮：彻底去掉 WPF 默认硬朗的直角悬停框 -->
+        <Style x:Key="PillButton" TargetType="Button">
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.82" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.68" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 顶部幽灵图标/快捷按钮 -->
+        <Style x:Key="GhostButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#14808090" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#24808090" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="RootBorder" CornerRadius="14" Background="#FFFFFF" BorderBrush="#E2E4EC" BorderThickness="1"
+            Margin="10">
         <Border.Effect>
-            <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.16" Color="#000000" />
+            <DropShadowEffect BlurRadius="20" ShadowDepth="3" Opacity="0.16" Color="#000000" />
         </Border.Effect>
 
-        <StackPanel Margin="18,13,18,13">
+        <StackPanel Margin="16,12,16,14">
 
+            <!-- 顶部栏：左侧引擎胶囊 + 状态；右侧快捷操作 -->
             <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Background="#EEF2FB" CornerRadius="4" Padding="6,2">
-                        <TextBlock x:Name="EngineText" Text="本地模型" FontSize="11" Foreground="#3B5BA8" />
+                    <Border x:Name="EngineBadge" Background="#EAF0FC" CornerRadius="6" Padding="8,3">
+                        <TextBlock x:Name="EngineText" Text="本地模型" FontSize="11" FontWeight="SemiBold" Foreground="#3B5BA8" />
                     </Border>
-                    <TextBlock x:Name="StatusText" Text="正在取词…" FontSize="11"
-                               Foreground="#8A8A93" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    <TextBlock x:Name="StatusText" Text="正在取词…" FontSize="11.5"
+                               Foreground="#646876" Margin="8,0,0,0" VerticalAlignment="Center" />
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-                    <Button x:Name="OcrButton" Background="Transparent" BorderThickness="0"
-                            Padding="8,1" Cursor="Hand" Click="OnOcrClick"
-                            ToolTip="框选屏幕区域识别后翻译">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button x:Name="ReplaceButton" Style="{StaticResource GhostButton}"
+                            Padding="7,2" Click="OnReplaceClick" Visibility="Collapsed"
+                            ToolTip="用当前译文替换原窗口中选中的文字">
                         <StackPanel>
-                            <TextBlock Text="截图" FontSize="11.5" Foreground="#5A5A64"
+                            <TextBlock x:Name="ReplaceBtnTitle" Text="替换" FontSize="11.5" FontWeight="Medium" Foreground="#3A3D4A"
                                        HorizontalAlignment="Center" />
-                            <TextBlock Text="Alt+S" FontSize="9" Foreground="#ABABB4"
+                            <TextBlock x:Name="ReplaceHotkeyHint" Text="Alt+R" FontSize="9.5" Foreground="#646876"
                                        HorizontalAlignment="Center" Margin="0,1,0,0" />
                         </StackPanel>
                     </Button>
-                    <Button x:Name="CloseButton" Content="✕" Width="24" Height="24" FontSize="11"
-                            Foreground="#9A9AA3" Background="Transparent" BorderThickness="0" Cursor="Hand"
-                            Click="OnCloseClick" ToolTip="关闭" Margin="6,0,0,0" VerticalAlignment="Top" />
+                    <Button x:Name="OcrButton" Style="{StaticResource GhostButton}"
+                            Padding="7,2" Click="OnOcrClick" Margin="2,0,0,0"
+                            ToolTip="框选屏幕区域识别后翻译">
+                        <StackPanel>
+                            <TextBlock x:Name="OcrBtnTitle" Text="截图" FontSize="11.5" FontWeight="Medium" Foreground="#3A3D4A"
+                                       HorizontalAlignment="Center" />
+                            <TextBlock x:Name="OcrHotkeyHint" Text="Alt+S" FontSize="9.5" Foreground="#646876"
+                                       HorizontalAlignment="Center" Margin="0,1,0,0" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="HistoryButton" Style="{StaticResource GhostButton}" Content="🕘"
+                            Width="27" Height="27" FontSize="13" Opacity="0.88"
+                            Click="OnHistoryClick" ToolTip="查看翻译历史" Margin="3,0,0,0" />
+                    <Button x:Name="PinButton" Style="{StaticResource GhostButton}" Content="📌"
+                            Width="27" Height="27" FontSize="12.5" Opacity="0.72"
+                            Click="OnPinClick" ToolTip="钉住浮窗（暂不自动关闭）" Margin="2,0,0,0" />
+                    <Button x:Name="CloseButton" Style="{StaticResource GhostButton}" Content="✕"
+                            Width="27" Height="27" FontSize="12" FontWeight="SemiBold" Foreground="#646876"
+                            Click="OnCloseClick" ToolTip="关闭 (Esc)" Margin="2,0,0,0" />
                 </StackPanel>
             </Grid>
 
-            <Border x:Name="SourcePanel" Background="#F6F6F8" CornerRadius="6"
-                    Padding="11,8" Margin="0,9,0,0">
-                <TextBlock x:Name="SourceText" Text="" FontSize="12.5" Foreground="#6E6E78"
-                           TextWrapping="Wrap" LineHeight="19" MaxHeight="60" />
+            <!-- 原文区：左侧细主题竖条，视觉层次更清晰 -->
+            <Border x:Name="SourcePanel" Background="#F4F5F8" CornerRadius="8"
+                    Padding="0" Margin="0,10,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border x:Name="SourceAccentBar" Grid.Column="0" Background="#3B5BA8" CornerRadius="3,0,0,3" Opacity="0.65" />
+                    <TextBlock Grid.Column="1" x:Name="SourceText" Text="" FontSize="12.5" Foreground="#5A5C68"
+                               TextWrapping="Wrap" LineHeight="19" MaxHeight="62" TextTrimming="CharacterEllipsis"
+                               Margin="10,8,11,8" />
+                </Grid>
             </Border>
 
-            <Border x:Name="InputPanel" Visibility="Collapsed" Background="#F6F6F8"
-                    CornerRadius="6" Padding="11,8" Margin="0,9,0,0">
+            <!-- 手动输入区 -->
+            <Border x:Name="InputPanel" Visibility="Collapsed" Background="#F4F5F8"
+                    CornerRadius="8" Padding="11,8" Margin="0,10,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -65,12 +144,11 @@
                     </Grid.ColumnDefinitions>
                     <TextBox x:Name="InputBox" Grid.Column="0" Text="" BorderThickness="0"
                              Background="Transparent" FontSize="13.5" Foreground="#1A1A1E"
-                             TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="90"
+                             TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="96"
                              VerticalScrollBarVisibility="Auto"
                              KeyDown="OnInputKeyDown" />
-                    <Button x:Name="InputSubmitButton" Grid.Column="1" Background="#3B5BA8"
-                            BorderThickness="0" Padding="13,3" Cursor="Hand"
-                            VerticalAlignment="Bottom" Margin="10,0,0,0"
+                    <Button x:Name="InputSubmitButton" Grid.Column="1" Style="{StaticResource PillButton}"
+                            Background="#3B5BA8" Padding="13,4" VerticalAlignment="Bottom" Margin="10,0,0,0"
                             Click="OnInputSubmitClick" ToolTip="翻译输入框里的内容">
                         <StackPanel>
                             <TextBlock Text="翻译" FontSize="11.5" Foreground="White"
@@ -82,35 +160,55 @@
                 </Grid>
             </Border>
 
-            <!-- 操作栏：放在原文和译文之间，位置固定。
-                 译文不管多长都在它下方增长，按钮不会被挤走。 -->
+            <!-- 固定操作栏：左语言切换，右场景预设（译/润/解）+ 朗读/复制/设置 -->
             <Grid Margin="0,10,0,0" x:Name="FooterPanel" Visibility="Collapsed">
                 <StackPanel x:Name="LangPanel" Orientation="Horizontal" HorizontalAlignment="Left"
                             VerticalAlignment="Center" />
+
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <Button x:Name="SpeakButton" Content="🔊" FontSize="12" Foreground="#5A5A64"
-                            Background="#F2F2F5" BorderThickness="0" Padding="8,3" Cursor="Hand"
-                            Margin="0,0,6,0" ToolTip="朗读译文" Click="OnSpeakClick" />
-                    <Button x:Name="CopyButton" Content="复制译文" FontSize="11.5" Foreground="#5A5A64"
-                            Background="#F2F2F5" BorderThickness="0" Padding="10,4" Cursor="Hand"
+                    <!-- 场景模式切换：仅本地模型与 OpenAI 接口可见 -->
+                    <Border x:Name="ModePanel" Background="#F0F1F5" CornerRadius="6" Padding="2" Margin="0,0,6,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="ModeTranslateBtn" Content="译" Style="{StaticResource PillButton}"
+                                    FontSize="11" Padding="7,2" Tag="translate" Click="OnModeClick"
+                                    ToolTip="翻译模式" />
+                            <Button x:Name="ModePolishBtn" Content="润" Style="{StaticResource PillButton}"
+                                    FontSize="11" Padding="7,2" Tag="polish" Click="OnModeClick"
+                                    ToolTip="润色优化（更地道流畅）" />
+                            <Button x:Name="ModeExplainBtn" Content="解" Style="{StaticResource PillButton}"
+                                    FontSize="11" Padding="7,2" Tag="explain" Click="OnModeClick"
+                                    ToolTip="简明解释（术语 / 报错 / 代码）" />
+                        </StackPanel>
+                    </Border>
+
+                    <Button x:Name="SpeakButton" Style="{StaticResource PillButton}" Content="🔊" FontSize="11.5"
+                            Foreground="#525460" Background="#F0F1F5" Padding="8,4" Margin="0,0,5,0"
+                            ToolTip="朗读译文" Click="OnSpeakClick" />
+                    <Button x:Name="CopyButton" Style="{StaticResource PillButton}" Content="复制" FontSize="11.5"
+                            Foreground="#525460" Background="#F0F1F5" Padding="10,4" Margin="0,0,5,0"
                             Click="OnCopyClick" />
-                    <Button x:Name="SettingsButton" Content="⚙" FontSize="12.5" Foreground="#5A5A64"
-                            Background="#F2F2F5" BorderThickness="0" Padding="8,3" Cursor="Hand"
-                            Margin="6,0,0,0" ToolTip="打开设置" Click="OnSettingsClick" />
+                    <Button x:Name="SettingsButton" Style="{StaticResource PillButton}" Content="⚙" FontSize="12"
+                            Foreground="#525460" Background="#F0F1F5" Padding="8,3"
+                            ToolTip="打开设置" Click="OnSettingsClick" />
                 </StackPanel>
             </Grid>
 
-            <ScrollViewer x:Name="ResultScroll" MaxHeight="380" Margin="0,11,0,0"
+            <!-- 细分隔线 -->
+            <Border x:Name="ResultDivider" Height="1" Background="#ECEDF2" Margin="0,10,0,0" />
+
+            <!-- 译文展示区 -->
+            <ScrollViewer x:Name="ResultScroll" MaxHeight="380" Margin="0,10,0,0"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">
-                <TextBlock x:Name="ResultText" Text="" FontSize="16" Foreground="#1A1A1E"
+                <TextBlock x:Name="ResultText" Text="" FontSize="15.5" Foreground="#1A1A1E"
                            TextWrapping="Wrap" LineHeight="25" />
             </ScrollViewer>
 
-            <Border x:Name="LangEditPanel" Visibility="Collapsed" Background="#F6F6F8"
-                    CornerRadius="6" Padding="11,9" Margin="0,10,0,0">
+            <!-- 快捷语言编辑面板 -->
+            <Border x:Name="LangEditPanel" Visibility="Collapsed" Background="#F4F5F8"
+                    CornerRadius="8" Padding="11,9" Margin="0,10,0,0">
                 <StackPanel>
-                    <TextBlock Text="选择要显示在浮窗上的语言，点一下切换" FontSize="11.5"
+                    <TextBlock x:Name="LangEditHint" Text="选择要显示在浮窗上的语言，点一下切换" FontSize="11.5"
                                Foreground="#6E6E78" Margin="0,0,0,8" />
                     <ItemsControl x:Name="LangEditList">
                         <ItemsControl.ItemsPanel>
@@ -120,11 +218,11 @@
                         </ItemsControl.ItemsPanel>
                     </ItemsControl>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
-                        <Button Content="取消" FontSize="11.5" Foreground="#5A5A64"
-                                Background="#EDEDF1" BorderThickness="0" Padding="14,4" Cursor="Hand"
+                        <Button x:Name="CancelLangBtn" Style="{StaticResource PillButton}" Content="取消" FontSize="11.5"
+                                Foreground="#525460" Background="#E6E7EE" Padding="14,4"
                                 Click="OnCancelLangEditClick" />
-                        <Button Content="确定" FontSize="11.5" Foreground="White"
-                                Background="#3B5BA8" BorderThickness="0" Padding="16,4" Cursor="Hand"
+                        <Button x:Name="ConfirmLangBtn" Style="{StaticResource PillButton}" Content="确定" FontSize="11.5"
+                                Foreground="White" Background="#3B5BA8" Padding="16,4"
                                 Margin="8,0,0,0" Click="OnConfirmLangEditClick" />
                     </StackPanel>
                 </StackPanel>

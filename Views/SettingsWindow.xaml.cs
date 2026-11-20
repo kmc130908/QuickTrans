@@ -32,7 +32,10 @@ public partial class SettingsWindow : Window
     private string? _loadedModelPathOverride;
     private readonly ObservableCollection<ModelRow> _rows = new();
     private readonly List<LangOption> _langOptions = new();
+    private readonly List<string> _blacklist = new();
     private bool _gpuOk;
+    private ThemeManager.Palette _theme = ThemeManager.Light;
+    private int _activeTab;
 
     private static readonly string[] Languages =
     {
@@ -64,6 +67,7 @@ public partial class SettingsWindow : Window
         RefreshModels();
 
         // 初始化完成后再挂监听，否则 LoadUi 赋值会被当成用户改动
+        SelectTab(0);
         HookDirtyTracking();
         SetDirty(false);
 
@@ -72,13 +76,7 @@ public partial class SettingsWindow : Window
 
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            // XAML 里的普通订阅拿不到已被内部处理掉的滚轮事件，
-            // 这里用 handledEventsToo=true 再挂一遍，确保滑块和下拉框不会因为滚轮改值。
-            foreach (var element in FindAllScrollWheelSensitive(this))
-            {
-                element.AddHandler(UIElement.PreviewMouseWheelEvent,
-                    new System.Windows.Input.MouseWheelEventHandler(OnComboWheel), true);
-            }
+            AttachWheelHandlers(PageGeneral);
 
             // 初始化过程中的假改动一并清掉
             SetDirty(false);
@@ -90,30 +88,249 @@ public partial class SettingsWindow : Window
         // 等界面彻底稳定后再把"有修改"状态清零。
         Loaded += (_, _) =>
         {
-            // 从浮窗（ShowActivated=false 的无焦点窗口）打开时，系统可能不给焦点。
-            // 这里只做激活，不闪 Topmost —— 置顶状态由 OpenSettings 统一管理：
-            // 打开设置时它会把本窗口设为 Topmost、把浮窗取消置顶，
-            // 关掉后再还原。闪一下反而会让本窗口掉到浮窗下面。
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                try
-                {
-                    if (WindowState == WindowState.Minimized)
-                        WindowState = WindowState.Normal;
-
-                    if (!IsVisible) Show();
-                    Activate();
-                    Focus();
-                }
-                catch { /* 窗口已在关闭流程中，忽略 */ }
-            }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 SetDirty(false);
                 SaveHint.Text = "";
             }), System.Windows.Threading.DispatcherPriority.ContextIdle);
         };
+    }
+
+    // ---------- 左侧导航分栏 ----------
+
+    private readonly HashSet<UIElement> _wheelAttached = new();
+
+    private void OnNavClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && int.TryParse(btn.Tag?.ToString(), out var idx))
+            SelectTab(idx);
+    }
+
+    private void SelectTab(int index)
+    {
+        _activeTab = index;
+        var pages = new FrameworkElement[] { PageGeneral, PageModel, PageApi, PagePopup, PageDnd, PageAbout };
+        var navs = new Button[] { NavGeneral, NavModel, NavApi, NavPopup, NavDnd, NavAbout };
+
+        var activeBg = ThemeManager.Brush(_theme.AccentSoftBg);
+        var activeFg = ThemeManager.Brush(_theme.Accent);
+        var idleFg = ThemeManager.Brush(_theme.TextSecondary);
+
+        for (var i = 0; i < pages.Length; i++)
+        {
+            var on = i == index;
+            pages[i].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            navs[i].Background = on ? activeBg : System.Windows.Media.Brushes.Transparent;
+            navs[i].Foreground = on ? activeFg : idleFg;
+            navs[i].FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+
+        if (index == 4) RefreshRunningApps();
+
+        MainScroll?.ScrollToTop();
+        if (index >= 0 && index < pages.Length)
+        {
+            var page = pages[index];
+            Dispatcher.BeginInvoke(new Action(() => AttachWheelHandlers(page)),
+                System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+    }
+
+    private string SelectedThemeValue() => ThemeBox.SelectedIndex switch
+    {
+        1 => "light",
+        2 => "dark",
+        _ => "system",
+    };
+
+    private void ApplyTheme(string? themeSetting)
+    {
+        _theme = ThemeManager.Resolve(themeSetting);
+        Resources["BrushWindowBg"] = ThemeManager.Brush(_theme.WindowBg);
+        Resources["BrushSidebarBg"] = ThemeManager.Brush(_theme.SidebarBg);
+        Resources["BrushCardBg"] = ThemeManager.Brush(_theme.CardBg);
+        Resources["BrushSubPanelBg"] = ThemeManager.Brush(_theme.SubPanelBg);
+        Resources["BrushBorder"] = ThemeManager.Brush(_theme.Border);
+        Resources["BrushTextPrimary"] = ThemeManager.Brush(_theme.TextPrimary);
+        Resources["BrushTextSecondary"] = ThemeManager.Brush(_theme.TextSecondary);
+        Resources["BrushTextMuted"] = ThemeManager.Brush(_theme.TextMuted);
+        Resources["BrushAccent"] = ThemeManager.Brush(_theme.Accent);
+        Resources["BrushAccentSoft"] = ThemeManager.Brush(_theme.AccentSoftBg);
+        Resources["BrushPillBg"] = ThemeManager.Brush(_theme.PillBg);
+        Resources["BrushInputBg"] = ThemeManager.Brush(_theme.InputBg);
+
+        if (NavGeneral != null)
+        {
+            var navs = new Button[] { NavGeneral, NavModel, NavApi, NavPopup, NavDnd, NavAbout };
+            var activeBg = ThemeManager.Brush(_theme.AccentSoftBg);
+            var activeFg = ThemeManager.Brush(_theme.Accent);
+            var idleFg = ThemeManager.Brush(_theme.TextSecondary);
+            for (var i = 0; i < navs.Length; i++)
+            {
+                var on = i == _activeTab;
+                navs[i].Background = on ? activeBg : System.Windows.Media.Brushes.Transparent;
+                navs[i].Foreground = on ? activeFg : idleFg;
+            }
+        }
+    }
+
+    // ---------- 免打扰与黑名单 ----------
+
+    private void RefreshRunningApps()
+    {
+        if (RunningAppsPanel == null) return;
+        RunningAppsPanel.Children.Clear();
+
+        var apps = DndService.GetRunningApps();
+        if (apps.Count == 0)
+        {
+            RunningAppsPanel.Children.Add(new TextBlock
+            {
+                Text = "未检测到其他运行中的桌面窗口，可在下方手动输入进程名。",
+                FontSize = 11.5,
+                Foreground = (System.Windows.Media.Brush)FindResource("BrushTextMuted"),
+            });
+            return;
+        }
+
+        foreach (var app in apps)
+        {
+            var proc = app.ProcessName;
+            var isBlocked = _blacklist.Any(x => string.Equals(x, proc, StringComparison.OrdinalIgnoreCase));
+            var cb = new CheckBox
+            {
+                Content = app.DisplayLabel,
+                IsChecked = isBlocked,
+                FontSize = 12,
+                Margin = new Thickness(0, 0, 0, 6),
+                Tag = proc,
+            };
+            cb.Checked += (_, _) =>
+            {
+                AddBlacklistEntry(proc, refreshRunning: false);
+            };
+            cb.Unchecked += (_, _) =>
+            {
+                RemoveBlacklistEntry(proc, refreshRunning: false);
+            };
+            RunningAppsPanel.Children.Add(cb);
+        }
+    }
+
+    private void RenderBlacklistTags()
+    {
+        if (BlacklistTagsPanel == null || BlacklistSummaryText == null) return;
+        BlacklistTagsPanel.Children.Clear();
+
+        BlacklistSummaryText.Text = _blacklist.Count == 0
+            ? "已加入黑名单的程序（当前为空）"
+            : $"已加入黑名单的程序（共 {_blacklist.Count} 个，点击可移除）";
+
+        foreach (var proc in _blacklist)
+        {
+            var captured = proc;
+            var btn = new Button
+            {
+                Content = $"{proc}.exe  ✕",
+                Style = (Style)FindResource("FlatButton"),
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 0, 6, 6),
+                FontSize = 11.5,
+                ToolTip = "从黑名单中移除 " + proc,
+            };
+            btn.Click += (_, _) => RemoveBlacklistEntry(captured, refreshRunning: true);
+            BlacklistTagsPanel.Children.Add(btn);
+        }
+    }
+
+    private void AddBlacklistEntry(string raw, bool refreshRunning)
+    {
+        var norm = DndService.NormalizeProcessName(raw);
+        if (string.IsNullOrEmpty(norm)) return;
+        if (string.Equals(norm, "quicktrans", StringComparison.OrdinalIgnoreCase))
+        {
+            SaveHint.Text = "不能把 QuickTrans 自身加入黑名单";
+            return;
+        }
+
+        if (!_blacklist.Any(x => string.Equals(x, norm, StringComparison.OrdinalIgnoreCase)))
+        {
+            _blacklist.Add(norm);
+            RenderBlacklistTags();
+            if (refreshRunning) RefreshRunningApps();
+            SetDirty(true);
+        }
+    }
+
+    private void RemoveBlacklistEntry(string proc, bool refreshRunning)
+    {
+        var removed = _blacklist.RemoveAll(x => string.Equals(x, proc, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+        {
+            RenderBlacklistTags();
+            if (refreshRunning) RefreshRunningApps();
+            SetDirty(true);
+        }
+    }
+
+    private void OnRefreshRunningAppsClick(object sender, RoutedEventArgs e)
+    {
+        RefreshRunningApps();
+        SaveHint.Text = "已刷新当前运行程序列表";
+    }
+
+    private void OnAddBlacklistClick(object sender, RoutedEventArgs e)
+    {
+        var raw = BlacklistInputBox.Text?.Trim() ?? "";
+        if (string.IsNullOrEmpty(raw)) return;
+        AddBlacklistEntry(raw, refreshRunning: true);
+        BlacklistInputBox.Text = "";
+    }
+
+    private void OnBlacklistInputKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            e.Handled = true;
+            OnAddBlacklistClick(sender, e);
+        }
+    }
+
+    /// <summary>同进程回退模式下用于实时预览主题/透明度。</summary>
+    public event Action<string, double>? ThemePreviewRequested;
+
+    private void OnThemeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        var theme = SelectedThemeValue();
+        ApplyTheme(theme);
+        BroadcastThemePreview(theme, OpacitySlider?.Value ?? _config.PopupOpacity);
+    }
+
+    private void BroadcastThemePreview(string theme, double opacity)
+    {
+        if (_suppressDirty) return;
+        var op = Math.Clamp(opacity, 0.3, 1.0);
+        if (_childMode)
+        {
+            _ = AppIpcClient.SendAsync($"PREVIEW_THEME\t{theme}\t{op.ToString("0.00", CultureInfo.InvariantCulture)}");
+        }
+        else
+        {
+            ThemePreviewRequested?.Invoke(theme, op);
+        }
+    }
+
+    private void AttachWheelHandlers(DependencyObject root)
+    {
+        foreach (var element in FindAllScrollWheelSensitive(root))
+        {
+            if (_wheelAttached.Add(element))
+            {
+                element.AddHandler(UIElement.PreviewMouseWheelEvent,
+                    new System.Windows.Input.MouseWheelEventHandler(OnComboWheel), true);
+            }
+        }
     }
 
     /// <summary>按接口类型调整表单。</summary>
@@ -344,6 +561,22 @@ public partial class SettingsWindow : Window
         win.ShowDialog();
     }
 
+    /// <summary>打开翻译历史记录窗口。</summary>
+    private void OnOpenHistoryClick(object sender, RoutedEventArgs e)
+    {
+        if (_childMode)
+        {
+            _ = AppIpcClient.SendAsync("OPEN_HISTORY");
+            return;
+        }
+
+        var win = new HistoryWindow(SelectedThemeValue())
+        {
+            Owner = this,
+        };
+        win.ShowDialog();
+    }
+
     private void OnTtsRateChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => UpdateTtsRateLabel();
 
     private void UpdateTtsRateLabel()
@@ -507,6 +740,7 @@ public partial class SettingsWindow : Window
         AddHandler(System.Windows.Controls.TextBox.TextChangedEvent,
             new TextChangedEventHandler((_, e) =>
             {
+                if (ReferenceEquals(e.OriginalSource, BlacklistInputBox)) return;
                 if (e.OriginalSource is TextBox tb && FindAncestor<ComboBox>(tb) != null) return;
                 SetDirty(true);
             }), true);
@@ -671,6 +905,16 @@ public partial class SettingsWindow : Window
 
         HotkeyBox.Text = _config.Hotkey;
         OcrHotkeyBox.Text = _config.OcrHotkey;
+        ReplaceHotkeyBox.Text = string.IsNullOrWhiteSpace(_config.ReplaceHotkey) ? "Alt+R" : _config.ReplaceHotkey;
+        DoubleCtrlCBox.IsChecked = _config.DoubleCtrlCEnabled;
+        SmartJoinLinesBox.IsChecked = _config.SmartJoinLines;
+        WordDictBox.IsChecked = _config.WordDictEnabled;
+        HistoryEnabledBox.IsChecked = _config.HistoryEnabled;
+
+        ThemeBox.SelectedIndex = string.Equals(_config.Theme, "light", StringComparison.OrdinalIgnoreCase) ? 1
+            : string.Equals(_config.Theme, "dark", StringComparison.OrdinalIgnoreCase) ? 2
+            : 0;
+        ApplyTheme(_config.Theme);
 
         LanguageBox.ItemsSource = Languages;
         LanguageBox.SelectedItem = Languages.Contains(_config.TargetLanguage) ? _config.TargetLanguage : Languages[0];
@@ -717,7 +961,25 @@ public partial class SettingsWindow : Window
         AutoCloseHoverBox.IsChecked = _config.PopupAutoClosePauseOnHover;
         TimedCloseBox.IsChecked = _config.PopupTimedCloseEnabled;
         TimedCloseSecondsBox.Text = _config.PopupTimedCloseSeconds.ToString();
+        PopupIsolateBox.IsChecked = _config.PopupIsolateProcess;
         ApplyAutoCloseState();
+
+        // 免打扰与黑名单
+        DndGameBox.IsChecked = _config.DndFullscreenGame;
+        DndVideoBox.IsChecked = _config.DndFullscreenVideo;
+        DndBlacklistEnabledBox.IsChecked = _config.DndBlacklistEnabled;
+        _blacklist.Clear();
+        if (_config.DndBlacklistProcesses != null)
+        {
+            foreach (var p in _config.DndBlacklistProcesses)
+            {
+                var norm = DndService.NormalizeProcessName(p);
+                if (!string.IsNullOrEmpty(norm) && !_blacklist.Any(x => string.Equals(x, norm, StringComparison.OrdinalIgnoreCase)))
+                    _blacklist.Add(norm);
+            }
+        }
+        RenderBlacklistTags();
+        RefreshRunningApps();
 
         // 常用语言
         _langOptions.Clear();
@@ -903,6 +1165,8 @@ public partial class SettingsWindow : Window
     {
         if (OpacityLabel != null)
             OpacityLabel.Text = $"{e.NewValue * 100:F0}%";
+        if (IsLoaded && !_suppressDirty)
+            BroadcastThemePreview(SelectedThemeValue(), e.NewValue);
     }
 
     private void OnUnloadPolicyChanged(object sender, RoutedEventArgs e)
@@ -975,14 +1239,29 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        if (string.Equals(hotkey, ocrHotkey, StringComparison.OrdinalIgnoreCase))
+        var replaceHotkey = ReplaceHotkeyBox.Text?.Trim() ?? "";
+        if (!HotkeyManager.TryParse(replaceHotkey, out _, out _, out var repErr))
         {
-            SaveHint.Text = "两个热键不能相同";
+            SaveHint.Text = "替换翻译热键无效：" + repErr;
+            return;
+        }
+
+        if (string.Equals(hotkey, ocrHotkey, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(hotkey, replaceHotkey, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ocrHotkey, replaceHotkey, StringComparison.OrdinalIgnoreCase))
+        {
+            SaveHint.Text = "三个快捷键不能重复";
             return;
         }
 
         _config.Hotkey = hotkey;
         _config.OcrHotkey = ocrHotkey;
+        _config.ReplaceHotkey = replaceHotkey;
+        _config.DoubleCtrlCEnabled = DoubleCtrlCBox.IsChecked == true;
+        _config.SmartJoinLines = SmartJoinLinesBox.IsChecked == true;
+        _config.WordDictEnabled = WordDictBox.IsChecked == true;
+        _config.HistoryEnabled = HistoryEnabledBox.IsChecked == true;
+        _config.Theme = SelectedThemeValue();
         _config.Engine = ApiRadio.IsChecked == true ? "api" : "local";
 
         ApplyFormToConfig();
@@ -1027,6 +1306,7 @@ public partial class SettingsWindow : Window
         _config.PopupTimedCloseSeconds = int.TryParse(TimedCloseSecondsBox.Text.Trim(), out var tsec)
             ? Math.Clamp(tsec, 1, 3600)
             : 30;
+        _config.PopupIsolateProcess = PopupIsolateBox.IsChecked == true;
         _config.AutoStart = AutoStartBox.IsChecked == true;
         _config.PrewarmModel = PrewarmModelBox.IsChecked == true;
 
@@ -1074,6 +1354,12 @@ public partial class SettingsWindow : Window
                 _config.UnloadMinutes = 5;
             }
         }
+
+        // 免打扰与黑名单
+        _config.DndFullscreenGame = DndGameBox.IsChecked == true;
+        _config.DndFullscreenVideo = DndVideoBox.IsChecked == true;
+        _config.DndBlacklistEnabled = DndBlacklistEnabledBox.IsChecked == true;
+        _config.DndBlacklistProcesses = _blacklist.ToList();
 
         // 常用语言
         var selected = _langOptions.Where(o => o.IsSelected).Select(o => o.Name).ToList();

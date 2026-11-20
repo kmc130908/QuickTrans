@@ -59,9 +59,11 @@ public sealed class ComponentItem
 /// </summary>
 public static class DefaultManifest
 {
-    // 自己上传的引擎和 Hy-MT2 模型放在这里，替换用户名即可
+    // 官方引擎（v2.0.0 Vulkan 通用版）与 Hy-MT2 模型发布地址
     private const string RepoBase =
         "https://github.com/kmc130908/QuickTrans/releases/download/v1.1.0";
+    private const string EngineRepoBase =
+        "https://github.com/kmc130908/QuickTrans/releases/download/v2.0.0";
 
     // 阿里 ModelScope 的官方仓库，国内直连
     private const string Qwen06 =
@@ -71,22 +73,22 @@ public static class DefaultManifest
 
     public static ComponentManifest Create() => new()
     {
-        Version = "1",
+        Version = "2",
         Components = new List<ComponentItem>
         {
             new()
             {
-                Id = "engine-cuda",
-                Name = "GPU 加速引擎",
-                Description = "带 CUDA 后端，NVIDIA 显卡可用。不装只能用 CPU，速度慢 3-4 倍。",
+                Id = "engine-vulkan",
+                Name = "Vulkan 通用 GPU 加速引擎",
+                Description = "支持 NVIDIA / AMD / Intel 全系显卡加速（仅 31MB，并自带 CPU 兜底）。不装只能用 CPU，速度慢 3–4 倍。",
                 Kind = "engine",
-                SizeBytes = 744L * 1024 * 1024,
-                Url = $"{RepoBase}/engine-cuda.zip",
-                MirrorUrl = $"https://ghfast.top/{RepoBase}/engine-cuda.zip",
+                SizeBytes = 32_840_864L,
+                Url = $"{EngineRepoBase}/engine-vulkan.zip",
+                MirrorUrl = $"https://ghfast.top/{EngineRepoBase}/engine-vulkan.zip",
+                Sha256 = "4C9AA655405F5A5FA5498968F70969F8CB410EA8EFDCE37A9D8BA7C7EE9FB982",
                 Target = "engine",
                 ArchiveKind = "zip",
-                // 用 ggml-cuda.dll 判定是否已安装 CUDA 引擎，避免把 CPU/Vulkan 版的 llama-server.exe 误判为已装 CUDA
-                CheckFile = "ggml-cuda.dll",
+                CheckFile = "ggml-vulkan.dll",
             },
             new()
             {
@@ -118,9 +120,10 @@ public static class DefaultManifest
                 Name = "Hy-MT2-1.8B（1.06GB）",
                 Description = "专用翻译模型，质量最稳，无繁体风险。官方无此量化版，由本项目自行量化发布。",
                 Kind = "model",
-                SizeBytes = 1060L * 1024 * 1024,
+                SizeBytes = 1_133_076_480L,
                 Url = $"{RepoBase}/Hy-MT2-1.8B-Q4_K_M.gguf",
                 MirrorUrl = $"https://ghfast.top/{RepoBase}/Hy-MT2-1.8B-Q4_K_M.gguf",
+                Sha256 = "DC5F44FCF1FA496EE7AD725982C0C8C553A4DE00259B53AF84C4B89FB0C06699",
                 Target = "models",
                 ArchiveKind = "none",
                 CheckFile = "Hy-MT2-1.8B-Q4_K_M.gguf",

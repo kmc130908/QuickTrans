@@ -17,8 +17,10 @@ public partial class PopupWindow : Window
 
     private const uint MONITOR_DEFAULTTONEAREST = 2;
     private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_FRAMECHANGED = 0x0020;
     private const uint SWP_ASYNCWINDOWPOS = 0x4000;
 
     [DllImport("user32.dll")]
@@ -57,6 +59,12 @@ public partial class PopupWindow : Window
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
+    [DllImport("imm32.dll")]
+    private static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
+
+    private IntPtr _savedImc = IntPtr.Zero;
+    private bool _imeDetached;
+
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -74,10 +82,14 @@ public partial class PopupWindow : Window
         public uint dwFlags;
     }
 
-    private static readonly Brush ActiveLangBg = new SolidColorBrush(Color.FromRgb(0x3B, 0x5B, 0xA8));
-    private static readonly Brush ActiveLangFg = Brushes.White;
-    private static readonly Brush IdleLangBg = new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF5));
-    private static readonly Brush IdleLangFg = new SolidColorBrush(Color.FromRgb(0x5A, 0x5A, 0x64));
+    private QuickTrans.Services.ThemeManager.Palette _theme = QuickTrans.Services.ThemeManager.Light;
+    private double _opacity = 1.0;
+    private string _currentMode = "translate";
+
+    private Brush ActiveLangBg => QuickTrans.Services.ThemeManager.Brush(_theme.Accent);
+    private Brush ActiveLangFg => Brushes.White;
+    private Brush IdleLangBg => QuickTrans.Services.ThemeManager.Brush(_theme.PillBg);
+    private Brush IdleLangFg => QuickTrans.Services.ThemeManager.Brush(_theme.TextSecondary);
 
     private readonly DispatcherTimer _autoCloseTimer;
     private readonly DispatcherTimer _foregroundCheckTimer;
@@ -86,12 +98,21 @@ public partial class PopupWindow : Window
     private bool _closed;
     private bool _positioned;
     private bool _inputMode;
+    private bool _pinned;
 
     /// <summary>取字来源窗口句柄：前台窗口切走它就启动自动关闭倒计时。</summary>
     private IntPtr _sourceHwnd = IntPtr.Zero;
 
     /// <summary>设置页窗口句柄：前台切到设置页不算失焦。</summary>
     private IntPtr _settingsHwnd = IntPtr.Zero;
+
+    /// <summary>历史记录窗口句柄：前台切到历史窗不算失焦。</summary>
+    private IntPtr _historyHwnd = IntPtr.Zero;
+
+    /// <summary>刚从浮窗发起打开设置/历史窗期间的短暂保护期，避免子进程尚未报到句柄前触发 0 秒自动关闭。</summary>
+    private long _auxOpeningUntilTick;
+
+    private HwndSource? _hwndSource;
 
     private bool _userMoved;
 
@@ -126,6 +147,15 @@ public partial class PopupWindow : Window
     /// <summary>用户点了喇叭，请求朗读当前译文。</summary>
     public event Action<string>? SpeakRequested;
 
+    /// <summary>用户点了「替换」，请求把当前译文粘贴替换到来源窗口。</summary>
+    public event Action<string, IntPtr>? ReplaceRequested;
+
+    /// <summary>用户点了场景预设（translate / polish / explain）。</summary>
+    public event Action<string>? ModeRequested;
+
+    /// <summary>用户点了顶部历史图标。</summary>
+    public event Action? HistoryRequested;
+
     /// <summary>当前译文文本，供朗读使用。</summary>
     public string CurrentResult => ResultText.Text;
 
@@ -156,8 +186,8 @@ public partial class PopupWindow : Window
         {
             _autoCloseTimer.Stop();
 
-            // 用户关掉了自动消失：计时到点也不关
-            if (!AutoCloseEnabled) return;
+            // 用户关掉了自动消失或已钉住：计时到点也不关
+            if (!AutoCloseEnabled || _pinned) return;
             if (_inputMode) return;
             // 鼠标悬停暂停：按设置决定，勾选才暂停
             if (IsMouseOver && AutoClosePauseOnHover) return;
@@ -183,7 +213,7 @@ public partial class PopupWindow : Window
         _timedCloseTimer.Tick += (_, _) =>
         {
             _timedCloseTimer.Stop();
-            if (!TimedCloseEnabled) return;
+            if (!TimedCloseEnabled || _pinned) return;
             if (_inputMode) return;
             Close();
         };
@@ -199,6 +229,11 @@ public partial class PopupWindow : Window
             _autoCloseTimer.Stop();
             _foregroundCheckTimer.Stop();
             _timedCloseTimer.Stop();
+            if (_hwndSource != null)
+            {
+                _hwndSource.RemoveHook(WndProc);
+                _hwndSource = null;
+            }
 
             // 译文还在流式输出时浮窗被关掉（切走自动关闭、定时关闭、Ctrl+Q、再次截图…）很常见。
             // 渲染定时器不停的话会一直挂在 Dispatcher 上：每 100ms 空转一次，
@@ -217,10 +252,43 @@ public partial class PopupWindow : Window
             }
         };
 
+        // 点击浮窗任意区域时，若当前因打开了设置页/历史窗而暂时取消置顶，
+        // 立刻把浮窗提到普通窗口 Z 序最前面（但不抢焦点），实现三窗「点哪个哪个在前」。
+        AddHandler(Mouse.PreviewMouseDownEvent, new MouseButtonEventHandler(OnAnyMouseDownRaise), true);
+
         // 拖动用 AddHandler + handledEventsToo:true 注册：
         // ScrollViewer（译文装在它里面）会把 MouseLeftButtonDown 标记为已处理，
         // 普通 += 收不到，表现就是点译文区域拖不动。handledEventsToo 强制接收。
         AddHandler(Mouse.MouseDownEvent, new MouseButtonEventHandler(OnDragStart), true);
+    }
+
+    private void OnAnyMouseDownRaise(object sender, MouseButtonEventArgs e)
+    {
+        if (Topmost) return;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+
+        // 当设置页/历史窗打开时，允许点击浮窗正常激活并提到最前，避免跨进程前景锁把浮窗压在后方
+        SetNoActivate(false);
+        Activate();
+        SetForegroundWindow(hwnd);
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    }
+
+    private void SetNoActivate(bool noActivate)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        var ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        var next = noActivate
+            ? (ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+            : ((ex & ~WS_EX_NOACTIVATE) | WS_EX_TOOLWINDOW);
+        if (next != ex)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, next);
+            SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
     }
 
     private void OnDragStart(object sender, MouseButtonEventArgs e)
@@ -289,6 +357,53 @@ public partial class PopupWindow : Window
         var ex = GetWindowLong(hwnd, GWL_EXSTYLE);
         // 关键：不抢焦点，否则目标窗口的选区会立刻消失
         SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
+
+        _hwndSource = HwndSource.FromHwnd(hwnd);
+        _hwndSource?.AddHook(WndProc);
+
+        // 非手动输入模式不需要输入法：摘掉窗口 IME 上下文，避免点击/拖动浮窗时
+        // 系统把第三方输入法（如搜狗/微信/百度）注入主进程常驻几十 MB 内存。
+        if (!_inputMode)
+        {
+            InputMethod.SetIsInputMethodEnabled(this, false);
+            InputMethod.SetIsInputMethodEnabled(InputBox, false);
+            _savedImc = ImmAssociateContext(hwnd, IntPtr.Zero);
+            _imeDetached = true;
+        }
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == QuickTrans.Services.ThemeManager.WM_QT_REFRESH_THEME)
+        {
+            var code = wParam.ToInt32();
+            if (code < 0)
+            {
+                var cfg = QuickTrans.Models.AppConfig.Load();
+                ApplyTheme(cfg.Theme, cfg.PopupOpacity);
+                ApplyTtsVisibility(cfg.TtsEnabled);
+                ApplyHotkeyHints(cfg.OcrHotkey, cfg.ReplaceHotkey);
+            }
+            else
+            {
+                var theme = QuickTrans.Services.ThemeManager.FromCode(code);
+                var op = Math.Clamp(lParam.ToInt32() / 100.0, 0.3, 1.0);
+                ApplyTheme(theme, op);
+            }
+            handled = true;
+            return IntPtr.Zero;
+        }
+
+        if (msg == QuickTrans.Services.ThemeManager.WM_QT_SET_AUX_HWND)
+        {
+            var kind = wParam.ToInt32();
+            if (kind == 1) SetSettingsWindow(lParam);
+            else if (kind == 2) SetHistoryWindow(lParam);
+            handled = true;
+            return IntPtr.Zero;
+        }
+
+        return IntPtr.Zero;
     }
 
     /// <summary>记录取字来源窗口句柄，前台窗口切走它才启动自动关闭。</summary>
@@ -298,8 +413,50 @@ public partial class PopupWindow : Window
         App.Log($"source window set: {sourceHwnd}");
     }
 
-    /// <summary>设置页窗口句柄：前台切到设置页不算失焦。</summary>
-    public void SetSettingsWindow(IntPtr settingsHwnd) => _settingsHwnd = settingsHwnd;
+    /// <summary>从浮窗打开设置页或历史窗前先取消置顶并暂缓自动关闭，防止窗口尚未报到句柄就被关掉。</summary>
+    public void BeginOpeningAuxWindow(int graceMs = 3000)
+    {
+        _auxOpeningUntilTick = Environment.TickCount64 + graceMs;
+        _autoCloseTimer.Stop();
+        _lostFocusOnce = false;
+        Topmost = false;
+        SetNoActivate(false);
+        SlowStreaming();
+    }
+
+    /// <summary>设置页窗口句柄：前台切到设置页不算失焦；打开时让位不遮挡，关掉后自动恢复置顶。</summary>
+    public void SetSettingsWindow(IntPtr settingsHwnd)
+    {
+        _settingsHwnd = settingsHwnd;
+        SyncAuxWindowState(settingsHwnd != IntPtr.Zero);
+    }
+
+    /// <summary>历史记录窗口句柄：前台切到历史窗不算失焦；打开时让位不遮挡，关掉后自动恢复置顶。</summary>
+    public void SetHistoryWindow(IntPtr historyHwnd)
+    {
+        _historyHwnd = historyHwnd;
+        SyncAuxWindowState(historyHwnd != IntPtr.Zero);
+    }
+
+    private void SyncAuxWindowState(bool openedNow)
+    {
+        if (openedNow)
+        {
+            _auxOpeningUntilTick = 0;
+            _autoCloseTimer.Stop();
+            _lostFocusOnce = false;
+            Topmost = false;
+            SetNoActivate(false);
+            SlowStreaming();
+        }
+        else if (_settingsHwnd == IntPtr.Zero && _historyHwnd == IntPtr.Zero)
+        {
+            _auxOpeningUntilTick = 0;
+            if (!_inputMode) SetNoActivate(true);
+            Topmost = true;
+            ResumeStreaming();
+        }
+    }
 
     /// <summary>
     /// 启动定时自动关闭（不管切不切窗口，到时自动关）。
@@ -324,8 +481,8 @@ public partial class PopupWindow : Window
 
     private void CheckForeground()
     {
-        // 手动输入模式不自动关闭（用户要在别的窗口打字）
-        if (_inputMode)
+        // 手动输入模式或已钉住浮窗不自动关闭
+        if (_inputMode || _pinned)
         {
             _autoCloseTimer.Stop();
             _lostFocusOnce = false;
@@ -358,8 +515,10 @@ public partial class PopupWindow : Window
             return;
         }
 
-        // 前台是设置页 → 不算失焦
-        if (_settingsHwnd != IntPtr.Zero && fg == _settingsHwnd)
+        // 前台是设置页 / 历史窗 / 刚发起打开附属窗 → 不算失焦
+        if ((_settingsHwnd != IntPtr.Zero && fg == _settingsHwnd)
+            || (_historyHwnd != IntPtr.Zero && fg == _historyHwnd)
+            || Environment.TickCount64 < _auxOpeningUntilTick)
         {
             _autoCloseTimer.Stop();
             _lostFocusOnce = false;
@@ -413,21 +572,103 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>
-    /// 设置浮窗背景的透明度。只改背景色的 alpha，文字保持完全不透明，
-    /// 这样能看清背后的原文，又不会把译文看得发虚。
+    /// 应用浅色/深色/跟随系统主题，并同步透明度。只调背板 alpha，文字保持清晰不透明。
     /// </summary>
-    public void ApplyOpacity(double value)
+    public void ApplyTheme(string? themeSetting, double opacity)
     {
-        var v = Math.Clamp(value, 0.3, 1.0);
-        var alpha = (byte)Math.Round(v * 255);
+        _theme = QuickTrans.Services.ThemeManager.Resolve(themeSetting);
+        _opacity = Math.Clamp(opacity, 0.3, 1.0);
 
-        RootBorder.Background = new SolidColorBrush(Color.FromArgb(alpha, 0xFF, 0xFF, 0xFF));
+        var t = _theme;
+        var alpha = (byte)Math.Round(_opacity * 255);
+        var panelAlpha = (byte)Math.Round(Math.Min(1.0, _opacity + 0.14) * 255);
 
-        // 原文/输入框的底衬略深一点，否则完全跟着主背景走会看不出层次
-        var panelAlpha = (byte)Math.Round(Math.Min(1.0, v + 0.15) * 255);
-        SourcePanel.Background = new SolidColorBrush(Color.FromArgb(panelAlpha, 0xF2, 0xF2, 0xF5));
-        InputPanel.Background = new SolidColorBrush(Color.FromArgb(panelAlpha, 0xF2, 0xF2, 0xF5));
+        RootBorder.Background = QuickTrans.Services.ThemeManager.Brush(alpha, t.CardBg);
+        RootBorder.BorderBrush = QuickTrans.Services.ThemeManager.Brush(t.Border);
+
+        EngineBadge.Background = QuickTrans.Services.ThemeManager.Brush(t.AccentSoftBg);
+        EngineText.Foreground = QuickTrans.Services.ThemeManager.Brush(t.Accent);
+        StatusText.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextMuted);
+
+        ReplaceBtnTitle.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+        ReplaceHotkeyHint.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextMuted);
+        OcrBtnTitle.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+        OcrHotkeyHint.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextMuted);
+        HistoryButton.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextSecondary);
+        PinButton.Foreground = _pinned
+            ? QuickTrans.Services.ThemeManager.Brush(t.Accent)
+            : QuickTrans.Services.ThemeManager.Brush(t.TextSecondary);
+        PinButton.Background = _pinned
+            ? QuickTrans.Services.ThemeManager.Brush(t.AccentSoftBg)
+            : Brushes.Transparent;
+        CloseButton.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextSecondary);
+
+        SourcePanel.Background = QuickTrans.Services.ThemeManager.Brush(panelAlpha, t.SubPanelBg);
+        SourceAccentBar.Background = QuickTrans.Services.ThemeManager.Brush(t.Accent);
+        SourceText.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextSecondary);
+
+        InputPanel.Background = QuickTrans.Services.ThemeManager.Brush(panelAlpha, t.SubPanelBg);
+        InputBox.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+        InputBox.CaretBrush = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+        InputSubmitButton.Background = QuickTrans.Services.ThemeManager.Brush(t.Accent);
+
+        ModePanel.Background = QuickTrans.Services.ThemeManager.Brush(t.PillBg);
+        SpeakButton.Background = QuickTrans.Services.ThemeManager.Brush(t.PillBg);
+        SpeakButton.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+        CopyButton.Background = QuickTrans.Services.ThemeManager.Brush(t.PillBg);
+        CopyButton.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+        SettingsButton.Background = QuickTrans.Services.ThemeManager.Brush(t.PillBg);
+        SettingsButton.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+
+        ResultDivider.Background = QuickTrans.Services.ThemeManager.Brush(t.Divider);
+        ResultText.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextPrimary);
+
+        LangEditPanel.Background = QuickTrans.Services.ThemeManager.Brush(t.SubPanelBg);
+        LangEditHint.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextSecondary);
+        CancelLangBtn.Background = QuickTrans.Services.ThemeManager.Brush(t.PillBg);
+        CancelLangBtn.Foreground = QuickTrans.Services.ThemeManager.Brush(t.TextSecondary);
+        ConfirmLangBtn.Background = QuickTrans.Services.ThemeManager.Brush(t.Accent);
+
+        if (_languages.Count > 0) ConfigureLanguages(_languages, _currentTarget);
+        UpdateModeButtons();
     }
+
+    public void ApplyOpacity(double value) => ApplyTheme(_theme.IsDark ? "dark" : "light", value);
+
+    /// <summary>设置场景预设栏（译 / 润 / 解）的可见性与当前高亮。传统机翻接口时隐藏。</summary>
+    public void ConfigureMode(string mode, bool supported)
+    {
+        _currentMode = string.IsNullOrWhiteSpace(mode) ? "translate" : mode;
+        ModePanel.Visibility = supported ? Visibility.Visible : Visibility.Collapsed;
+        UpdateModeButtons();
+    }
+
+    private void UpdateModeButtons()
+    {
+        var btns = new[]
+        {
+            (ModeTranslateBtn, "translate"),
+            (ModePolishBtn, "polish"),
+            (ModeExplainBtn, "explain"),
+        };
+        foreach (var (btn, key) in btns)
+        {
+            var on = string.Equals(_currentMode, key, StringComparison.OrdinalIgnoreCase);
+            btn.Background = on ? ActiveLangBg : Brushes.Transparent;
+            btn.Foreground = on ? ActiveLangFg : IdleLangFg;
+        }
+    }
+
+    private void OnModeClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string mode) return;
+        if (string.Equals(_currentMode, mode, StringComparison.OrdinalIgnoreCase)) return;
+        _currentMode = mode;
+        UpdateModeButtons();
+        ModeRequested?.Invoke(mode);
+    }
+
+    private void OnHistoryClick(object sender, RoutedEventArgs e) => HistoryRequested?.Invoke();
 
     /// <summary>生成语言按钮。current 决定哪个高亮。</summary>
     public void ConfigureLanguages(IEnumerable<string> languages, string current)
@@ -435,6 +676,7 @@ public partial class PopupWindow : Window
         _languages = languages.ToList();
         _currentTarget = current;
 
+        var pillStyle = TryFindResource("PillButton") as Style;
         LangPanel.Children.Clear();
         foreach (var lang in _languages)
         {
@@ -442,12 +684,11 @@ public partial class PopupWindow : Window
             var btn = new Button
             {
                 Content = ShortLabel(lang),
+                Style = pillStyle,
                 Tag = lang,
                 FontSize = 11,
-                Padding = new Thickness(8, 3, 8, 3),
+                Padding = new Thickness(9, 4, 9, 4),
                 Margin = new Thickness(0, 0, 5, 0),
-                BorderThickness = new Thickness(0),
-                Cursor = Cursors.Hand,
                 Background = isActive ? ActiveLangBg : IdleLangBg,
                 Foreground = isActive ? ActiveLangFg : IdleLangFg,
                 ToolTip = "翻译为" + lang,
@@ -460,10 +701,9 @@ public partial class PopupWindow : Window
         var edit = new Button
         {
             Content = "＋",
+            Style = pillStyle,
             FontSize = 11,
-            Padding = new Thickness(7, 3, 7, 3),
-            BorderThickness = new Thickness(0),
-            Cursor = Cursors.Hand,
+            Padding = new Thickness(8, 4, 8, 4),
             Background = IdleLangBg,
             Foreground = IdleLangFg,
             ToolTip = "增删浮窗上显示的语言",
@@ -490,18 +730,18 @@ public partial class PopupWindow : Window
     {
         LangEditList.Items.Clear();
 
+        var pillStyle = TryFindResource("PillButton") as Style;
         foreach (var lang in AllLanguages)
         {
             var enabled = _editingLanguages.Contains(lang);
             var btn = new Button
             {
                 Content = (enabled ? "✓ " : "") + lang,
+                Style = pillStyle,
                 Tag = lang,
                 FontSize = 11.5,
                 Padding = new Thickness(10, 4, 10, 4),
                 Margin = new Thickness(0, 0, 6, 6),
-                BorderThickness = new Thickness(0),
-                Cursor = Cursors.Hand,
                 Background = enabled ? ActiveLangBg : IdleLangBg,
                 Foreground = enabled ? ActiveLangFg : IdleLangFg,
             };
@@ -565,10 +805,11 @@ public partial class PopupWindow : Window
         SourceText.Text = source;
         EngineText.Text = engineLabel;
         ResultText.Text = "";
-        ResultText.Foreground = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1E));
+        ResultText.Foreground = QuickTrans.Services.ThemeManager.Brush(_theme.TextPrimary);
         StatusText.Text = "翻译中…";
         FooterPanel.Visibility = Visibility.Visible;
         CopyButton.Visibility = Visibility.Collapsed;
+        ReplaceButton.Visibility = Visibility.Collapsed;
         _hasResult = false;
     }
 
@@ -580,7 +821,7 @@ public partial class PopupWindow : Window
         InputPanel.Visibility = Visibility.Visible;
         EngineText.Text = engineLabel;
         ResultText.Text = "";
-        ResultText.Foreground = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1E));
+        ResultText.Foreground = QuickTrans.Services.ThemeManager.Brush(_theme.TextPrimary);
         StatusText.Text = $"翻译为 {targetLabel} …";
         FooterPanel.Visibility = Visibility.Visible;
         CopyButton.Visibility = Visibility.Collapsed;
@@ -606,6 +847,13 @@ public partial class PopupWindow : Window
         {
             var ex = GetWindowLong(hwnd, GWL_EXSTYLE);
             SetWindowLong(hwnd, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE);
+            if (_imeDetached)
+            {
+                InputMethod.SetIsInputMethodEnabled(this, true);
+                InputMethod.SetIsInputMethodEnabled(InputBox, true);
+                if (_savedImc != IntPtr.Zero) ImmAssociateContext(hwnd, _savedImc);
+                _imeDetached = false;
+            }
             SetForegroundWindow(hwnd);
         }
 
@@ -639,10 +887,11 @@ public partial class PopupWindow : Window
     public void StartTranslate(string targetLabel)
     {
         ResultText.Text = "";
-        ResultText.Foreground = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1E));
+        ResultText.Foreground = QuickTrans.Services.ThemeManager.Brush(_theme.TextPrimary);
         StatusText.Text = $"翻译为 {targetLabel} …";
         FooterPanel.Visibility = Visibility.Visible;
         CopyButton.Visibility = Visibility.Collapsed;
+        ReplaceButton.Visibility = Visibility.Collapsed;
         _hasResult = false;
         if (!_inputMode) _autoCloseTimer.Stop();
     }
@@ -790,10 +1039,14 @@ public partial class PopupWindow : Window
 
         StatusText.Text = _hasResult ? $"完成 · {ResultText.Text.Length} 字" : "没有返回内容";
         CopyButton.Visibility = _hasResult ? Visibility.Visible : Visibility.Collapsed;
+        // 只有从外部窗口划词而来且已有译文时，才露出「替换」按钮
+        ReplaceButton.Visibility = (_hasResult && !_inputMode && _sourceHwnd != IntPtr.Zero)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     /// <summary>去掉模型在译文前附加的常见套话。</summary>
-    private static string StripPreamble(string text)
+    public static string StripPreamble(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return text;
 
@@ -827,9 +1080,12 @@ public partial class PopupWindow : Window
     public void ShowError(string message)
     {
         ResultText.Text = message;
-        ResultText.Foreground = Brushes.Firebrick;
+        ResultText.Foreground = _theme.IsDark
+            ? QuickTrans.Services.ThemeManager.Brush(Color.FromRgb(0xF0, 0x71, 0x67))
+            : Brushes.Firebrick;
         StatusText.Text = "失败";
         CopyButton.Visibility = Visibility.Collapsed;
+        ReplaceButton.Visibility = Visibility.Collapsed;
         _autoCloseTimer.Stop();
     }
 
@@ -855,6 +1111,42 @@ public partial class PopupWindow : Window
 
     private void OnOcrClick(object sender, RoutedEventArgs e) => OcrRequested?.Invoke();
 
+    private void OnReplaceClick(object sender, RoutedEventArgs e)
+    {
+        if (!_hasResult || _sourceHwnd == IntPtr.Zero) return;
+        ReplaceRequested?.Invoke(ResultText.Text, _sourceHwnd);
+    }
+
+    private void OnPinClick(object sender, RoutedEventArgs e)
+    {
+        _pinned = !_pinned;
+        PinButton.Opacity = _pinned ? 1.0 : 0.72;
+        PinButton.Foreground = _pinned
+            ? QuickTrans.Services.ThemeManager.Brush(_theme.Accent)
+            : QuickTrans.Services.ThemeManager.Brush(_theme.TextSecondary);
+        PinButton.Background = _pinned
+            ? QuickTrans.Services.ThemeManager.Brush(_theme.AccentSoftBg)
+            : Brushes.Transparent;
+        PinButton.ToolTip = _pinned ? "已钉住（点击恢复自动关闭）" : "钉住浮窗（暂不自动关闭）";
+
+        if (_pinned)
+        {
+            _autoCloseTimer.Stop();
+            _timedCloseTimer.Stop();
+        }
+        else if (_hasResult && TimedCloseEnabled && !_inputMode)
+        {
+            StartTimedClose();
+        }
+    }
+
+    /// <summary>把快捷键提示同步到浮窗顶部按钮下方（例如 Alt+S / Alt+R）。</summary>
+    public void ApplyHotkeyHints(string ocrHotkey, string replaceHotkey)
+    {
+        if (!string.IsNullOrWhiteSpace(ocrHotkey)) OcrHotkeyHint.Text = ocrHotkey;
+        if (!string.IsNullOrWhiteSpace(replaceHotkey)) ReplaceHotkeyHint.Text = replaceHotkey;
+    }
+
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
         App.Log("settings button clicked");
@@ -871,7 +1163,10 @@ public partial class PopupWindow : Window
     public void SetSpeaking(bool speaking)
     {
         // 朗读中高亮，提示用户再点一下停止
-        SpeakButton.Opacity = speaking ? 1.0 : 0.55;
+        SpeakButton.Opacity = speaking ? 1.0 : 0.85;
+        SpeakButton.Foreground = speaking
+            ? QuickTrans.Services.ThemeManager.Brush(_theme.Accent)
+            : QuickTrans.Services.ThemeManager.Brush(_theme.TextPrimary);
         SpeakButton.ToolTip = speaking ? "停止朗读" : "朗读译文";
     }
 
@@ -886,6 +1181,7 @@ public partial class PopupWindow : Window
         if (!_hasResult) return;
         try
         {
+            QuickTrans.Services.ClipboardWatcher.SuppressFor(700);
             Clipboard.SetText(ResultText.Text);
             StatusText.Text = "已复制";
         }

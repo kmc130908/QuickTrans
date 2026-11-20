@@ -1,10 +1,11 @@
 using System.Runtime.InteropServices;
-using System.Windows.Interop;
+using WinForms = System.Windows.Forms;
 
 namespace QuickTrans.Services;
 
 /// <summary>
-/// 全局热键。用 message-only 窗口接收 WM_HOTKEY，不依赖主窗口是否存在。
+/// 全局热键。使用轻量 Win32 message-only 窗口（NativeWindow）接收 WM_HOTKEY，
+/// 不触发 WPF HwndSource / D3D 渲染管线初始化，显著降低常驻待机内存。
 /// </summary>
 public sealed class HotkeyManager : IDisposable
 {
@@ -21,7 +22,28 @@ public sealed class HotkeyManager : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-    private readonly HwndSource _source;
+    private sealed class MessageSink : WinForms.NativeWindow
+    {
+        private readonly Action<WinForms.Message> _onMessage;
+
+        public MessageSink(Action<WinForms.Message> onMessage)
+        {
+            _onMessage = onMessage;
+            CreateHandle(new WinForms.CreateParams
+            {
+                Caption = "QuickTransHotkeySink",
+                Parent = new IntPtr(-3), // HWND_MESSAGE
+            });
+        }
+
+        protected override void WndProc(ref WinForms.Message m)
+        {
+            _onMessage(m);
+            base.WndProc(ref m);
+        }
+    }
+
+    private readonly MessageSink _sink;
     private readonly int _id = 0x5154;
     private bool _registered;
 
@@ -32,25 +54,13 @@ public sealed class HotkeyManager : IDisposable
 
     public HotkeyManager()
     {
-        var p = new HwndSourceParameters("QuickTransHotkeySink")
-        {
-            Width = 0,
-            Height = 0,
-            WindowStyle = 0,
-            ParentWindow = new IntPtr(-3), // HWND_MESSAGE
-        };
-        _source = new HwndSource(p);
-        _source.AddHook(WndProc);
+        _sink = new MessageSink(OnMessage);
     }
 
-    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    private void OnMessage(WinForms.Message m)
     {
-        if (msg == WM_HOTKEY && wParam.ToInt32() == _id)
-        {
+        if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == _id)
             Pressed?.Invoke(this, EventArgs.Empty);
-            handled = true;
-        }
-        return IntPtr.Zero;
     }
 
     public bool Register(string hotkey)
@@ -63,7 +73,7 @@ public sealed class HotkeyManager : IDisposable
             return false;
         }
 
-        if (!RegisterHotKey(_source.Handle, _id, mods | MOD_NOREPEAT, vk))
+        if (!RegisterHotKey(_sink.Handle, _id, mods | MOD_NOREPEAT, vk))
         {
             LastError = "热键被其他程序占用，换一个组合试试";
             return false;
@@ -78,7 +88,7 @@ public sealed class HotkeyManager : IDisposable
     public void Unregister()
     {
         if (!_registered) return;
-        UnregisterHotKey(_source.Handle, _id);
+        UnregisterHotKey(_sink.Handle, _id);
         _registered = false;
     }
 
@@ -147,7 +157,6 @@ public sealed class HotkeyManager : IDisposable
     public void Dispose()
     {
         Unregister();
-        _source.RemoveHook(WndProc);
-        _source.Dispose();
+        if (_sink.Handle != IntPtr.Zero) _sink.DestroyHandle();
     }
 }

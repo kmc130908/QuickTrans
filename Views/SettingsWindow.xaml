@@ -2,37 +2,90 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="QuickTrans 设置"
-        Width="740" Height="660"
-        MinWidth="640" MinHeight="520"
+        Width="820" Height="640"
+        MinWidth="700" MinHeight="520"
         WindowStartupLocation="CenterScreen"
-        Background="#FAFAFB"
+        Background="{DynamicResource BrushWindowBg}"
+        Foreground="{DynamicResource BrushTextPrimary}"
         FontFamily="{StaticResource UiFont}"
         TextOptions.TextFormattingMode="Display"
         UseLayoutRounding="True">
 
     <Window.Resources>
+        <SolidColorBrush x:Key="BrushWindowBg" Color="#F6F7FA" />
+        <SolidColorBrush x:Key="BrushSidebarBg" Color="#F1F2F6" />
+        <SolidColorBrush x:Key="BrushCardBg" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="BrushSubPanelBg" Color="#F4F5F8" />
+        <SolidColorBrush x:Key="BrushBorder" Color="#E5E6EC" />
+        <SolidColorBrush x:Key="BrushTextPrimary" Color="#1A1A1E" />
+        <SolidColorBrush x:Key="BrushTextSecondary" Color="#525460" />
+        <SolidColorBrush x:Key="BrushTextMuted" Color="#8A8A93" />
+        <SolidColorBrush x:Key="BrushAccent" Color="#3B5BA8" />
+        <SolidColorBrush x:Key="BrushAccentSoft" Color="#E4ECFB" />
+        <SolidColorBrush x:Key="BrushPillBg" Color="#F0F1F5" />
+        <SolidColorBrush x:Key="BrushInputBg" Color="#FFFFFF" />
+
         <Style x:Key="Card" TargetType="Border">
-            <Setter Property="Background" Value="White" />
-            <Setter Property="BorderBrush" Value="#E8E8EC" />
+            <Setter Property="Background" Value="{DynamicResource BrushCardBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="10" />
             <Setter Property="Padding" Value="16,14" />
             <Setter Property="Margin" Value="0,0,0,12" />
         </Style>
         <Style x:Key="SectionTitle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="FontWeight" Value="Medium" />
-            <Setter Property="Foreground" Value="#1A1A1E" />
+            <Setter Property="FontSize" Value="13.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
             <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+        <Style x:Key="PageHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="17" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
+            <Setter Property="Margin" Value="2,0,0,12" />
         </Style>
         <Style x:Key="Hint" TargetType="TextBlock">
             <Setter Property="FontSize" Value="11.5" />
-            <Setter Property="Foreground" Value="#8A8A93" />
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextMuted}" />
             <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
+        </Style>
+        <Style TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
+        </Style>
+        <Style x:Key="NavButton" TargetType="Button">
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextSecondary}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="12,9" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.82" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Padding" Value="7,5" />
-            <Setter Property="BorderBrush" Value="#DEDEE4" />
+            <Setter Property="Background" Value="{DynamicResource BrushInputBg}" />
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource BrushTextPrimary}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="FontSize" Value="12.5" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -40,21 +93,57 @@
         <Style TargetType="ComboBox">
             <Setter Property="Padding" Value="7,4" />
             <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Foreground" Value="#1A1A1E" />
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="#1A1A1E" />
         </Style>
         <Style x:Key="FlatButton" TargetType="Button">
-            <Setter Property="Background" Value="#F2F2F5" />
+            <Setter Property="Background" Value="{DynamicResource BrushPillBg}" />
+            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="Padding" Value="11,5" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.82" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="PrimaryButton" TargetType="Button">
-            <Setter Property="Background" Value="#3B5BA8" />
+            <Setter Property="Background" Value="{DynamicResource BrushAccent}" />
             <Setter Property="Foreground" Value="White" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="18,7" />
             <Setter Property="FontSize" Value="13" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.86" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
 
@@ -64,429 +153,608 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <ScrollViewer x:Name="MainScroll" Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="20,18,20,4">
-            <StackPanel>
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="168" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
 
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="翻译通道" Style="{StaticResource SectionTitle}" />
-
-                        <StackPanel Orientation="Horizontal">
-                            <RadioButton x:Name="LocalRadio" Content="本地模型" GroupName="engine"
-                                         IsChecked="True" VerticalAlignment="Center" FontSize="12.5"
-                                         Checked="OnEngineChanged" />
-                            <RadioButton x:Name="ApiRadio" Content="在线接口" GroupName="engine"
-                                         Margin="20,0,0,0" VerticalAlignment="Center" FontSize="12.5"
-                                         Checked="OnEngineChanged" />
-                        </StackPanel>
-
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="本地模型不联网、无限量、响应通常在 100–300ms。在线接口适合你在别处已有 API Key 的情况。" />
+            <!-- 左侧分类导航 -->
+            <Border Grid.Column="0" Background="{DynamicResource BrushSidebarBg}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,1,0" Padding="12,16,12,12">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Margin="6,0,0,16">
+                        <TextBlock Text="QuickTrans" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Text="偏好设置" FontSize="11" Foreground="{DynamicResource BrushTextMuted}" Margin="0,2,0,0" />
                     </StackPanel>
-                </Border>
 
-                <Border Style="{StaticResource Card}">
                     <StackPanel>
-                        <Grid>
-                            <TextBlock Text="本地模型" Style="{StaticResource SectionTitle}" />
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                <Button x:Name="RefreshButton" Content="刷新列表" Style="{StaticResource FlatButton}"
-                                        Click="OnRefreshClick" />
-                                <Button Content="打开模型文件夹" Style="{StaticResource FlatButton}" Margin="8,0,0,0"
-                                        Click="OnOpenModelsFolder" />
-                            </StackPanel>
-                        </Grid>
-
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
-                                   Text="把任意 .gguf 文件放进 models 文件夹，点刷新就能看到。删除文件即可移除模型。" />
-
-                        <Border BorderBrush="#EDEDF1" BorderThickness="1" CornerRadius="8" Background="#FCFCFD"
-                                MinHeight="120" MaxHeight="230">
-                            <ListBox x:Name="ModelList" BorderThickness="0" Background="Transparent"
-                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                     HorizontalContentAlignment="Stretch">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="6,6">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding DisplayName}" FontSize="12.5"
-                                                           Foreground="#1A1A1E" TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{Binding Subtitle}" FontSize="11"
-                                                           Foreground="#8A8A93" Margin="0,2,0,0" />
-                                            </StackPanel>
-
-                                            <Border Grid.Column="1" Background="#EEF2FB" CornerRadius="4"
-                                                    Padding="6,2" Margin="8,0" VerticalAlignment="Center"
-                                                    Visibility="{Binding BadgeVisibility}">
-                                                <TextBlock Text="{Binding Badge}" FontSize="10.5" Foreground="#3B5BA8" />
-                                            </Border>
-
-                                            <Button Grid.Column="2" Content="使用"
-                                                    Style="{StaticResource FlatButton}"
-                                                    VerticalAlignment="Center"
-                                                    Tag="{Binding}"
-                                                    Click="OnUseModelClick" />
-                                        </Grid>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-                        </Border>
-
-                        <TextBlock x:Name="EngineStatus" Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="正在检查引擎…" />
+                        <Button x:Name="NavGeneral" Content="⚙  常规与热键" Style="{StaticResource NavButton}" Tag="0" Click="OnNavClick" />
+                        <Button x:Name="NavModel"   Content="🧠  本地模型"   Style="{StaticResource NavButton}" Tag="1" Click="OnNavClick" />
+                        <Button x:Name="NavApi"     Content="🌐  在线接口"   Style="{StaticResource NavButton}" Tag="2" Click="OnNavClick" />
+                        <Button x:Name="NavPopup"   Content="🪟  浮窗与外观" Style="{StaticResource NavButton}" Tag="3" Click="OnNavClick" />
+                        <Button x:Name="NavDnd"     Content="🔕  免打扰"     Style="{StaticResource NavButton}" Tag="4" Click="OnNavClick" />
+                        <Button x:Name="NavAbout"   Content="🔊  朗读与关于" Style="{StaticResource NavButton}" Tag="5" Click="OnNavClick" />
                     </StackPanel>
-                </Border>
+                </DockPanel>
+            </Border>
 
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="模型加载策略" Style="{StaticResource SectionTitle}" />
+            <!-- 右侧模块化内容 -->
+            <ScrollViewer x:Name="MainScroll" Grid.Column="1" VerticalScrollBarVisibility="Auto" Padding="22,18,22,8">
+                <Grid>
 
-                        <StackPanel x:Name="DevicePanel" Orientation="Horizontal" Margin="0,0,0,10">
-                            <TextBlock Text="推理设备" FontSize="12.5" VerticalAlignment="Center" />
-                            <RadioButton x:Name="GpuRadio" Content="GPU（快，占显存）" GroupName="device"
-                                         FontSize="12.5" Margin="14,0,0,0" VerticalAlignment="Center" />
-                            <RadioButton x:Name="CpuRadio" Content="CPU（慢，不占显存）" GroupName="device"
-                                         FontSize="12.5" Margin="16,0,0,0" VerticalAlignment="Center" />
-                        </StackPanel>
+                    <!-- ==================== 0. 常规与热键 ==================== -->
+                    <StackPanel x:Name="PageGeneral">
+                        <TextBlock Text="常规与热键" Style="{StaticResource PageHeader}" />
 
-                        <StackPanel x:Name="EngineVariantPanel" Orientation="Horizontal" Margin="0,0,0,10">
-                            <TextBlock Text="引擎版本" FontSize="12.5" VerticalAlignment="Center" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="EngineVariantBox" Width="240" Margin="14,0,0,0"
-                                      VerticalAlignment="Center" SelectionChanged="OnEngineVariantChanged">
-                                <ComboBoxItem Content="GPU 版（CUDA / Vulkan，可选 CPU/GPU）" />
-                                <ComboBoxItem Content="CPU 版（精简 45MB，只能 CPU）" />
-                            </ComboBox>
-                        </StackPanel>
-
-                        <TextBlock x:Name="EngineVariantHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="改引擎版本会卸载当前模型，下次翻译用新引擎重新加载。CPU 版没有 GPU 后端，只能跑 CPU。" />
-
-                        <CheckBox x:Name="AutoStartBox" Content="开机自动启动（随系统登录运行）"
-                                  FontSize="12.5" Margin="0,14,0,8" />
-
-                        <CheckBox x:Name="PrewarmModelBox" Content="启动软件时预加载本地模型（关闭可降低待机内存占用）"
-                                  FontSize="12.5" Margin="0,0,0,10" />
-
-                        <RadioButton x:Name="KeepLoadedRadio" GroupName="unload" FontSize="12.5"
-                                     Content="一直保留在显存 / CPU 内存里（响应最快）" Margin="0,0,0,8" />
-                        <RadioButton x:Name="UnloadOnCloseRadio" GroupName="unload" FontSize="12.5"
-                                     Content="浮窗关闭后立即卸载（下次翻译要重新加载，约 2–3 秒）"
-                                     Margin="0,0,0,8" />
-
-                        <StackPanel Orientation="Horizontal">
-                            <RadioButton x:Name="UnloadIdleRadio" GroupName="unload" FontSize="12.5"
-                                         Content="闲置" VerticalAlignment="Center"
-                                         Checked="OnUnloadPolicyChanged" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="UnloadMinutesBox" Width="88" Margin="8,0,8,0"
-                                      IsEditable="True" VerticalContentAlignment="Center" />
-                            <TextBlock Text="分钟后卸载" FontSize="12.5" VerticalAlignment="Center" />
-                        </StackPanel>
-
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="以 0.5 分钟为最小单位。卸载后显存立即释放，下次翻译会重新加载模型。" />
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="浮窗外观" Style="{StaticResource SectionTitle}" />
-
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="110" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="52" />
-                            </Grid.ColumnDefinitions>
-
-                            <TextBlock Grid.Column="0" Text="不透明度" FontSize="12"
-                                       VerticalAlignment="Center" />
-                            <Slider Grid.Column="1" PreviewMouseWheel="OnComboWheel" x:Name="OpacitySlider" Minimum="0.3" Maximum="1.0"
-                                    TickFrequency="0.05" IsSnapToTickEnabled="True"
-                                    VerticalAlignment="Center" Margin="0,0,10,0"
-                                    ValueChanged="OnOpacityChanged" />
-                            <TextBlock Grid.Column="2" x:Name="OpacityLabel" Text="100%"
-                                       FontSize="12" VerticalAlignment="Center" TextAlignment="Right" />
-                        </Grid>
-
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="只调整浮窗的背板透明度，文字始终保持完全不透明、清晰可读。调低后能看清背后的原文。" />
-
-                        <Grid Margin="0,12,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="110" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="托盘图标" FontSize="12"
-                                       VerticalAlignment="Center" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" Grid.Column="1" x:Name="IconStyleBox" Width="220"
-                                      HorizontalAlignment="Left">
-                                <ComboBoxItem Content="① 圆形 · 译（默认）" />
-                                <ComboBoxItem Content="② 双向箭头" />
-                                <ComboBoxItem Content="③ 对话气泡" />
-                                <ComboBoxItem Content="④ 文 A 双色" />
-                            </ComboBox>
-                        </Grid>
-
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
-                                   Text="改完保存会立即切换托盘图标；exe 文件本身的图标需要重新打包才会变。" />
-
-                        <CheckBox x:Name="AutoClosePopupBox" FontSize="12.5" Margin="0,16,0,0"
-                                  Content="切走窗口后自动关闭浮窗"
-                                  Checked="OnAutoCloseChanged" Unchecked="OnAutoCloseChanged" />
-
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <TextBlock Text="等待" FontSize="12" VerticalAlignment="Center" />
-                            <TextBox x:Name="AutoCloseSecondsBox" Width="70" Margin="8,0,8,0"
-                                     VerticalContentAlignment="Center" />
-                            <TextBlock Text="秒后关闭" FontSize="12" VerticalAlignment="Center" />
-                        </StackPanel>
-
-                        <CheckBox x:Name="AutoCloseHoverBox" FontSize="12.5" Margin="0,8,0,0"
-                                  Content="鼠标停在浮窗上时暂停倒计时" />
-
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
-                                   Text="从取字的来源窗口切到其它窗口后开始计时；0 秒表示立即关闭（0 秒时忽略悬停暂停）。继续操作来源窗口不会关闭。手动输入模式不会自动关闭。" />
-
-                        <Border Background="#F6F6F8" CornerRadius="6" Padding="12,10" Margin="0,14,0,0">
+                        <Border Style="{StaticResource Card}">
                             <StackPanel>
-                                <CheckBox x:Name="TimedCloseBox" FontSize="12.5"
-                                          Content="定时自动关闭（不切窗口也自动关）" />
-                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                    <TextBlock Text="显示" FontSize="12" VerticalAlignment="Center" />
-                                    <TextBox x:Name="TimedCloseSecondsBox" Width="70" Margin="8,0,8,0"
-                                             VerticalContentAlignment="Center" />
-                                    <TextBlock Text="秒后自动关闭" FontSize="12" VerticalAlignment="Center" />
+                                <TextBlock Text="翻译通道" Style="{StaticResource SectionTitle}" />
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton x:Name="LocalRadio" Content="本地模型（离线免费）" GroupName="engine"
+                                                 IsChecked="True" VerticalAlignment="Center" FontSize="12.5"
+                                                 Checked="OnEngineChanged" />
+                                    <RadioButton x:Name="ApiRadio" Content="在线接口" GroupName="engine"
+                                                 Margin="22,0,0,0" VerticalAlignment="Center" FontSize="12.5"
+                                                 Checked="OnEngineChanged" />
                                 </StackPanel>
-                                <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
-                                           Text="翻译完成后开始计时，无论是否切走窗口，到时间自动关闭。" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                           Text="本地模型不联网、无限量，GPU 响应约 100–300ms。在线接口适合已有 API Key 或不想下载本地模型的场景。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="快捷键与触发" Style="{StaticResource SectionTitle}" />
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="106" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="划词翻译" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,0,8" />
+                                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                                        <TextBox x:Name="HotkeyBox" Width="150" IsReadOnly="True"
+                                                 PreviewKeyDown="OnHotkeyKeyDown" />
+                                        <TextBlock Text="点输入框后按组合键；未选文字时打开手动输入" FontSize="11"
+                                                   Foreground="#9A9AA3" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                    </StackPanel>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="截图翻译" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,0,8" />
+                                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                                        <TextBox x:Name="OcrHotkeyBox" Width="150" IsReadOnly="True"
+                                                 PreviewKeyDown="OnHotkeyKeyDown" />
+                                        <TextBlock Text="框选任意显示器屏幕区域做离线 OCR 翻译" FontSize="11"
+                                                   Foreground="#9A9AA3" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                    </StackPanel>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="替换翻译" FontSize="12"
+                                               VerticalAlignment="Center" />
+                                    <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal">
+                                        <TextBox x:Name="ReplaceHotkeyBox" Width="150" IsReadOnly="True"
+                                                 PreviewKeyDown="OnHotkeyKeyDown" />
+                                        <TextBlock Text="翻译当前选中的文字并直接粘贴替换原文" FontSize="11"
+                                                   Foreground="#9A9AA3" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <CheckBox x:Name="DoubleCtrlCBox" FontSize="12.5" Margin="0,12,0,0"
+                                          Content="快速连按两次 Ctrl+C 触发划词翻译" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                                           Text="开启后，选中文本连续快速按两次 Ctrl+C 即可翻译（不影响单次正常复制）。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="语言与取词" Style="{StaticResource SectionTitle}" />
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="106" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="默认目标语言" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,0,8" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" Grid.Row="0" Grid.Column="1"
+                                              x:Name="LanguageBox" Width="180" HorizontalAlignment="Left" Margin="0,0,0,8" />
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="取词方式" FontSize="12"
+                                               VerticalAlignment="Center" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" Grid.Row="1" Grid.Column="1"
+                                              x:Name="GrabModeBox" Width="250" HorizontalAlignment="Left" />
+                                </Grid>
+
+                                <CheckBox x:Name="AutoDirectionBox" FontSize="12.5" Margin="0,12,0,0"
+                                          Content="自动判断方向：选中中文译成英语，选中其他语言译成默认目标语言" />
+
+                                <CheckBox x:Name="SmartJoinLinesBox" FontSize="12.5" Margin="0,8,0,0"
+                                          Content="自动合并 PDF / 文档中的多余断行（智能去换行）" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                                           Text="读论文、PDF 或截图 OCR 时自动拼接被强行折断的句子（保留分段和列表换行），翻译更连贯。" />
+
+                                <CheckBox x:Name="WordDictBox" FontSize="12.5" Margin="0,10,0,0"
+                                          Content="单词词典模式：选中单个英文单词时输出音标、词性、释义与例句" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                                           Text="在本地模型和 OpenAI 兼容接口下生效；百度 / 有道 / 谷歌接口保持普通翻译。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="启动行为" Style="{StaticResource SectionTitle}" />
+                                <CheckBox x:Name="AutoStartBox" Content="开机自动启动（随系统登录静默运行）"
+                                          FontSize="12.5" Margin="0,0,0,8" />
+                                <CheckBox x:Name="ShowSettingsOnStartupBox" FontSize="12.5"
+                                          Content="手动启动软件时自动打开设置页" />
                             </StackPanel>
                         </Border>
                     </StackPanel>
-                </Border>
 
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="在线接口（可选）" Style="{StaticResource SectionTitle}" />
+                    <!-- ==================== 1. 本地模型 ==================== -->
+                    <StackPanel x:Name="PageModel" Visibility="Collapsed">
+                        <TextBlock Text="本地模型与推理引擎" Style="{StaticResource PageHeader}" />
 
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <TextBlock Text="已保存接口" FontSize="12" VerticalAlignment="Center" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="ProfileBox" Width="150" Margin="12,0,0,0"
-                                      SelectionChanged="OnProfileChanged" />
-                            <TextBlock Text="名称" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" />
-                            <TextBox x:Name="ProfileNameBox" Width="130" Margin="6,0,0,0"
-                                     ToolTip="给这套接口起个名字，改完点保存即可重命名" />
-                            <Button Content="新建" FontSize="11.5" Padding="12,4" Margin="8,0,0,0"
-                                    Cursor="Hand" Click="OnNewProfileClick" />
-                            <Button Content="删除" FontSize="11.5" Padding="12,4" Margin="6,0,0,0"
-                                    Cursor="Hand" Click="OnDeleteProfileClick" />
-                        </StackPanel>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid>
+                                    <TextBlock Text="已安装的本地模型" Style="{StaticResource SectionTitle}" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button x:Name="RefreshButton" Content="刷新列表" Style="{StaticResource FlatButton}"
+                                                Click="OnRefreshClick" />
+                                        <Button Content="打开模型文件夹" Style="{StaticResource FlatButton}" Margin="8,0,0,0"
+                                                Click="OnOpenModelsFolder" />
+                                    </StackPanel>
+                                </Grid>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <TextBlock Text="接口类型" FontSize="12" VerticalAlignment="Center" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="ApiTypeBox" Width="250" Margin="12,0,0,0"
-                                      SelectionChanged="OnApiTypeChanged">
-                                <ComboBoxItem Content="OpenAI 兼容（DeepSeek / 智谱 / 自建）" />
-                                <ComboBoxItem Content="百度翻译开放平台" />
-                                <ComboBoxItem Content="有道智云" />
-                                <ComboBoxItem Content="谷歌翻译（免费端点，需能访问）" />
-                            </ComboBox>
-                        </StackPanel>
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                           Text="把任意 .gguf 文件放进 models 文件夹，点刷新就能看到；也可以在「朗读与关于 → 管理组件」里一键下载。" />
 
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="110" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
+                                <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Background="{DynamicResource BrushSubPanelBg}"
+                                        MinHeight="110" MaxHeight="220">
+                                    <ListBox x:Name="ModelList" BorderThickness="0" Background="Transparent"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                             HorizontalContentAlignment="Stretch">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="6,6">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" x:Name="ApiUrlLabel" Text="Base URL" FontSize="12"
-                                       VerticalAlignment="Center" Margin="0,0,0,8" />
-                            <TextBox Grid.Row="0" Grid.Column="1" x:Name="ApiUrlBox" Margin="0,0,0,8"
-                                     ToolTip="例如 https://api.deepseek.com/v1" />
+                                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding DisplayName}" FontSize="12.5"
+                                                                   Foreground="{DynamicResource BrushTextPrimary}" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                                                   Foreground="{DynamicResource BrushTextMuted}" Margin="0,2,0,0" />
+                                                    </StackPanel>
 
-                            <TextBlock Grid.Row="1" Grid.Column="0" x:Name="ApiKeyLabel" Text="API Key" FontSize="12"
-                                       VerticalAlignment="Center" Margin="0,0,0,8" />
-                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="ApiKeyBox" Margin="0,0,0,8" />
+                                                    <Border Grid.Column="1" Background="{DynamicResource BrushAccentSoft}" CornerRadius="4"
+                                                            Padding="6,2" Margin="8,0" VerticalAlignment="Center"
+                                                            Visibility="{Binding BadgeVisibility}">
+                                                        <TextBlock Text="{Binding Badge}" FontSize="10.5" Foreground="{DynamicResource BrushAccent}" />
+                                                    </Border>
 
-                            <TextBlock Grid.Row="2" Grid.Column="0" x:Name="ApiModelLabel" Text="模型名" FontSize="12"
-                                       VerticalAlignment="Center" />
-                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="ApiModelBox" />
-                        </Grid>
+                                                    <Button Grid.Column="2" Content="使用"
+                                                            Style="{StaticResource FlatButton}"
+                                                            VerticalAlignment="Center"
+                                                            Tag="{Binding}"
+                                                            Click="OnUseModelClick" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Border>
 
-                        <TextBlock x:Name="ApiKeyHelpLink" FontSize="12" Foreground="#3B5BA8"
-                                   Cursor="Hand" Margin="0,2,0,0"
-                                   Text="如何获取密钥 / API 地址？"
-                                   TextDecorations="Underline"
-                                   MouseLeftButtonUp="OnApiKeyHelpClick" />
-
-                        <TextBlock x:Name="ApiHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="填任何 OpenAI 兼容接口都行：DeepSeek、智谱、DeepL 代理、公司网关。" />
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="语音朗读" Style="{StaticResource SectionTitle}" />
-
-                        <CheckBox x:Name="TtsEnabledBox" FontSize="12.5" Margin="0,0,0,10"
-                                  Content="在浮窗上显示朗读按钮（🔊）" />
-
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <TextBlock Text="中文音色" FontSize="12.5" VerticalAlignment="Center" Width="62" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="TtsVoiceZhBox"
-                                      Width="230" Margin="8,0,0,0" />
-                        </StackPanel>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <TextBlock Text="英文音色" FontSize="12.5" VerticalAlignment="Center" Width="62" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="TtsVoiceEnBox"
-                                      Width="230" Margin="8,0,0,0" />
-                        </StackPanel>
-
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="语速" FontSize="12.5" VerticalAlignment="Center" />
-                            <Slider x:Name="TtsRateSlider" PreviewMouseWheel="OnComboWheel"
-                                    Minimum="-50" Maximum="100" Value="0" Width="200"
-                                    Margin="14,0,0,0" VerticalAlignment="Center"
-                                    ValueChanged="OnTtsRateChanged" />
-                            <TextBlock x:Name="TtsRateLabel" FontSize="12" Foreground="#6B6B75"
-                                       VerticalAlignment="Center" Margin="10,0,0,0" Text="常速" />
-                        </StackPanel>
-
-                        <TextBlock x:Name="TtsHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="使用 Windows 自带的语音包，完全离线。想加更多声音，在「设置 → 时间和语言 → 语音」里添加。" />
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="关于与更新" Style="{StaticResource SectionTitle}" />
-
-                        <Grid Margin="0,2,0,10">
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="当前版本" FontSize="12.5" Foreground="#6B6B75"
-                                           VerticalAlignment="Center" />
-                                <TextBlock x:Name="VersionText" FontSize="13" FontWeight="SemiBold"
-                                           Foreground="#1A1A1E" Margin="8,0,0,0"
-                                           VerticalAlignment="Center" Text="—" />
+                                <TextBlock x:Name="EngineStatus" Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                           Text="正在检查引擎…" />
                             </StackPanel>
-                            <Button x:Name="CheckUpdateButton" Content="检查更新"
-                                    HorizontalAlignment="Right" Padding="14,4" FontSize="12"
-                                    Cursor="Hand" Click="OnCheckUpdateClick"
-                                    Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
-                        </Grid>
+                        </Border>
 
-                        <TextBlock x:Name="UpdateHint" Style="{StaticResource Hint}"
-                                   Margin="0,0,0,10" Text="" />
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="推理设备与卸载策略" Style="{StaticResource SectionTitle}" />
 
-                        <CheckBox x:Name="ShowSettingsOnStartupBox" FontSize="12.5" Margin="0,0,0,12"
-                                  Content="手动启动软件时自动打开设置页" />
+                                <StackPanel x:Name="DevicePanel" Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="推理设备" FontSize="12.5" VerticalAlignment="Center" />
+                                    <RadioButton x:Name="GpuRadio" Content="GPU（快，占显存）" GroupName="device"
+                                                 FontSize="12.5" Margin="14,0,0,0" VerticalAlignment="Center" />
+                                    <RadioButton x:Name="CpuRadio" Content="CPU（慢，不占显存）" GroupName="device"
+                                                 FontSize="12.5" Margin="16,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
 
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="管理组件（引擎 / 模型）…" HorizontalAlignment="Left"
-                                    Padding="14,5" FontSize="12" Cursor="Hand"
-                                    Click="OnOpenComponentsClick"
-                                    Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
-                            <Button Content="查看使用引导" HorizontalAlignment="Left"
-                                    Padding="14,5" FontSize="12" Cursor="Hand" Margin="10,0,0,0"
-                                    Click="OnOpenWelcomeClick"
-                                    Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
+                                <StackPanel x:Name="EngineVariantPanel" Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="引擎版本" FontSize="12.5" VerticalAlignment="Center" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="EngineVariantBox" Width="250" Margin="14,0,0,0"
+                                              VerticalAlignment="Center" SelectionChanged="OnEngineVariantChanged">
+                                        <ComboBoxItem Content="GPU 版（CUDA / Vulkan，可选 CPU/GPU）" />
+                                        <ComboBoxItem Content="CPU 版（精简 45MB，只能 CPU）" />
+                                    </ComboBox>
+                                </StackPanel>
 
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="使用方式" Style="{StaticResource SectionTitle}" />
+                                <TextBlock x:Name="EngineVariantHint" Style="{StaticResource Hint}" Margin="0,0,0,10"
+                                           Text="改引擎版本会卸载当前模型，下次翻译用新引擎重新加载。CPU 版没有 GPU 后端，只能跑 CPU。" />
 
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="110" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
+                                <CheckBox x:Name="PrewarmModelBox" Content="启动软件时预加载本地模型（关闭可降低待机内存占用）"
+                                          FontSize="12.5" Margin="0,2,0,12" />
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="划词热键" FontSize="12"
-                                       VerticalAlignment="Center" Margin="0,0,0,8" />
-                            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBox x:Name="HotkeyBox" Width="160" IsReadOnly="True"
-                                         PreviewKeyDown="OnHotkeyKeyDown" />
-                                <TextBlock Text="点这里再按组合键" FontSize="11" Foreground="#A0A0A8"
-                                           VerticalAlignment="Center" Margin="8,0,0,0" />
+                                <RadioButton x:Name="KeepLoadedRadio" GroupName="unload" FontSize="12.5"
+                                             Content="一直保留在显存 / 内存里（响应最快）" Margin="0,0,0,8" />
+                                <RadioButton x:Name="UnloadOnCloseRadio" GroupName="unload" FontSize="12.5"
+                                             Content="浮窗关闭后立即卸载（下次翻译重新加载约 2 秒）" Margin="0,0,0,8" />
+
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton x:Name="UnloadIdleRadio" GroupName="unload" FontSize="12.5"
+                                                 Content="闲置" VerticalAlignment="Center"
+                                                 Checked="OnUnloadPolicyChanged" Unchecked="OnUnloadPolicyChanged" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="UnloadMinutesBox" Width="76"
+                                              Margin="6,0,6,0" IsEditable="True" VerticalAlignment="Center" />
+                                    <TextBlock Text="分钟后自动卸载（最小 0.5 分钟，推荐）" FontSize="12.5"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                           Text="卸载后推理进程 llama-server 会完全退出，显存和模型内存全部归还系统，下次按热键自动重新加载。" />
                             </StackPanel>
+                        </Border>
+                    </StackPanel>
 
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="截图热键" FontSize="12"
-                                       VerticalAlignment="Center" Margin="0,0,0,8" />
-                            <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBox x:Name="OcrHotkeyBox" Width="160" IsReadOnly="True"
-                                         PreviewKeyDown="OnHotkeyKeyDown" />
-                                <TextBlock Text="框选屏幕区域做 OCR" FontSize="11" Foreground="#A0A0A8"
-                                           VerticalAlignment="Center" Margin="8,0,0,0" />
+                    <!-- ==================== 2. 在线接口 ==================== -->
+                    <StackPanel x:Name="PageApi" Visibility="Collapsed">
+                        <TextBlock Text="在线翻译接口（可选）" Style="{StaticResource PageHeader}" />
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="多套接口配置" Style="{StaticResource SectionTitle}" />
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <TextBlock Text="已保存" FontSize="12" VerticalAlignment="Center" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="ProfileBox" Width="140" Margin="10,0,0,0"
+                                              SelectionChanged="OnProfileChanged" />
+                                    <TextBlock Text="名称" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" />
+                                    <TextBox x:Name="ProfileNameBox" Width="125" Margin="6,0,0,0"
+                                             ToolTip="给这套接口起个名字，改完点保存即可重命名" />
+                                    <Button Content="新建" Style="{StaticResource FlatButton}" Margin="8,0,0,0"
+                                            Click="OnNewProfileClick" />
+                                    <Button Content="删除" Style="{StaticResource FlatButton}" Margin="6,0,0,0"
+                                            Click="OnDeleteProfileClick" />
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <TextBlock Text="接口类型" FontSize="12" VerticalAlignment="Center" Width="96" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="ApiTypeBox" Width="260"
+                                              SelectionChanged="OnApiTypeChanged">
+                                        <ComboBoxItem Content="OpenAI 兼容（DeepSeek / 智谱 / 自建）" />
+                                        <ComboBoxItem Content="百度翻译开放平台" />
+                                        <ComboBoxItem Content="有道智云" />
+                                        <ComboBoxItem Content="谷歌翻译（免费端点，需能访问）" />
+                                    </ComboBox>
+                                </StackPanel>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="96" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" x:Name="ApiUrlLabel" Text="Base URL" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,0,8" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="ApiUrlBox" Margin="0,0,0,8"
+                                             ToolTip="例如 https://api.deepseek.com/v1" />
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" x:Name="ApiKeyLabel" Text="API Key" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,0,8" />
+                                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="ApiKeyBox" Margin="0,0,0,8" />
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" x:Name="ApiModelLabel" Text="模型名" FontSize="12"
+                                               VerticalAlignment="Center" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="ApiModelBox" />
+                                </Grid>
+
+                                <TextBlock x:Name="ApiKeyHelpLink" FontSize="12" Foreground="{DynamicResource BrushAccent}"
+                                           Cursor="Hand" Margin="0,10,0,0"
+                                           Text="如何获取密钥 / API 地址？"
+                                           TextDecorations="Underline"
+                                           MouseLeftButtonUp="OnApiKeyHelpClick" />
+
+                                <TextBlock x:Name="ApiHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                           Text="填任何 OpenAI 兼容接口都行：DeepSeek、智谱、DeepL 代理、公司网关。" />
                             </StackPanel>
-
-                            <TextBlock Grid.Row="2" Grid.Column="0" Text="默认目标语言" FontSize="12"
-                                       VerticalAlignment="Center" Margin="0,0,0,8" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" Grid.Row="2" Grid.Column="1" x:Name="LanguageBox" Width="180"
-                                      HorizontalAlignment="Left" Margin="0,0,0,8" />
-
-                            <TextBlock Grid.Row="3" Grid.Column="0" Text="取词方式" FontSize="12"
-                                       VerticalAlignment="Center" />
-                            <ComboBox PreviewMouseWheel="OnComboWheel" Grid.Row="3" Grid.Column="1" x:Name="GrabModeBox" Width="240"
-                                      HorizontalAlignment="Left" />
-                        </Grid>
-
-                        <CheckBox x:Name="AutoDirectionBox" FontSize="12.5" Margin="0,12,0,0"
-                                  Content="自动判断方向：选中中文译成英语，选中其他语言译成上面的默认目标语言" />
-
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="自动模式会用 UI Automation 直接读选区，读不到才模拟 Ctrl+C。遇到某些应用取词不准时，可切到「仅剪贴板」。" />
+                        </Border>
                     </StackPanel>
-                </Border>
 
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="浮窗上的快捷语言" Style="{StaticResource SectionTitle}" />
+                    <!-- ==================== 3. 浮窗与外观 ==================== -->
+                    <StackPanel x:Name="PagePopup" Visibility="Collapsed">
+                        <TextBlock Text="浮窗与外观" Style="{StaticResource PageHeader}" />
 
-                        <ItemsControl x:Name="LangCheckList">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <WrapPanel />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}"
-                                              FontSize="12.5" Margin="0,0,16,7" />
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="外观与托盘" Style="{StaticResource SectionTitle}" />
 
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
-                                   Text="勾选的语言会出现在浮窗操作栏，点击即可切换并重新翻译当前文本。建议选 3–5 个。" />
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="96" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="界面主题" FontSize="12" VerticalAlignment="Center" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" Grid.Column="1" x:Name="ThemeBox"
+                                              Width="220" HorizontalAlignment="Left" SelectionChanged="OnThemeChanged">
+                                        <ComboBoxItem Content="跟随 Windows 系统主题（推荐）" />
+                                        <ComboBoxItem Content="浅色模式" />
+                                        <ComboBoxItem Content="深色模式" />
+                                    </ComboBox>
+                                </Grid>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="96" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="48" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="背景不透明度" FontSize="12" VerticalAlignment="Center" />
+                                    <Slider PreviewMouseWheel="OnComboWheel" Grid.Column="1" x:Name="OpacitySlider"
+                                            Minimum="0.3" Maximum="1.0" Value="1.0"
+                                            TickFrequency="0.05" IsSnapToTickEnabled="True"
+                                            VerticalAlignment="Center" Margin="0,0,10,0"
+                                            ValueChanged="OnOpacityChanged" />
+                                    <TextBlock Grid.Column="2" x:Name="OpacityLabel" Text="100%"
+                                               FontSize="12" VerticalAlignment="Center" TextAlignment="Right" />
+                                </Grid>
+
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,12"
+                                           Text="只调整浮窗背板透明度，文字保持完全不透明清晰可读。" />
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="96" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="托盘图标" FontSize="12" VerticalAlignment="Center" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" Grid.Column="1" x:Name="IconStyleBox"
+                                              Width="220" HorizontalAlignment="Left">
+                                        <ComboBoxItem Content="① 圆形 · 译（默认）" />
+                                        <ComboBoxItem Content="② 双向箭头" />
+                                        <ComboBoxItem Content="③ 对话气泡" />
+                                        <ComboBoxItem Content="④ 文 A 双色" />
+                                    </ComboBox>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="自动关闭与内存模式" Style="{StaticResource SectionTitle}" />
+
+                                <CheckBox x:Name="AutoClosePopupBox" FontSize="12.5"
+                                          Content="切走来源窗口后自动关闭浮窗"
+                                          Checked="OnAutoCloseChanged" Unchecked="OnAutoCloseChanged" />
+
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock Text="等待" FontSize="12" VerticalAlignment="Center" />
+                                    <TextBox x:Name="AutoCloseSecondsBox" Width="70" Margin="8,0,8,0"
+                                             VerticalContentAlignment="Center" />
+                                    <TextBlock Text="秒后关闭（0 表示切走立刻关）" FontSize="12" VerticalAlignment="Center" />
+                                </StackPanel>
+
+                                <CheckBox x:Name="AutoCloseHoverBox" FontSize="12.5" Margin="0,8,0,0"
+                                          Content="鼠标停在浮窗上时暂停倒计时" />
+
+                                <Border Background="{DynamicResource BrushSubPanelBg}" CornerRadius="6" Padding="12,10" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <CheckBox x:Name="TimedCloseBox" FontSize="12.5"
+                                                  Content="定时自动关闭（不切窗口也自动关）" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <TextBlock Text="显示" FontSize="12" VerticalAlignment="Center" />
+                                            <TextBox x:Name="TimedCloseSecondsBox" Width="70" Margin="8,0,8,0"
+                                                     VerticalContentAlignment="Center" />
+                                            <TextBlock Text="秒后自动关闭" FontSize="12" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
+                                                   Text="翻译完成后开始计时，到时间自动关闭（点右上角 📌 钉住可暂停自动关闭）。" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="{DynamicResource BrushSubPanelBg}" CornerRadius="6" Padding="12,10" Margin="0,10,0,0">
+                                    <StackPanel>
+                                        <CheckBox x:Name="PopupIsolateBox" FontSize="12.5"
+                                                  Content="极低待机内存模式（翻译浮窗与截图独立子进程运行）" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
+                                                   Text="开启：关窗后主程序待机内存回落到约 18MB，按热键约 0.4 秒弹出。关闭：同进程浮窗约 0.03 秒瞬弹，翻译后主程序常驻约 38MB。" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="浮窗上的快捷语言" Style="{StaticResource SectionTitle}" />
+
+                                <ItemsControl x:Name="LangCheckList">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}"
+                                                      FontSize="12.5" Margin="0,0,16,7" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                                           Text="勾选的语言会出现在浮窗操作栏，点击即可切换并重新翻译当前文本。建议选 3–5 个。" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
-                </Border>
 
-            </StackPanel>
-        </ScrollViewer>
+                    <!-- ==================== 4. 免打扰 ==================== -->
+                    <StackPanel x:Name="PageDnd" Visibility="Collapsed">
+                        <TextBlock Text="免打扰与热键屏蔽" Style="{StaticResource PageHeader}" />
 
-        <Border Grid.Row="1" Background="White" BorderBrush="#E8E8EC" BorderThickness="0,1,0,0" Padding="20,12">
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="全屏场景自动屏蔽" Style="{StaticResource SectionTitle}" />
+
+                                <CheckBox x:Name="DndGameBox" FontSize="12.5"
+                                          Content="全屏游戏时屏蔽所有翻译热键（划词 / 截图 / 替换 / 双击 Ctrl+C）" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,10"
+                                           Text="自动识别独占全屏与无边框全屏游戏，避免打游戏时误触快捷键；不干扰常规代码编辑器和办公软件。" />
+
+                                <CheckBox x:Name="DndVideoBox" FontSize="12.5"
+                                          Content="全屏视频时屏蔽所有翻译热键" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                                           Text="在浏览器或 PotPlayer / VLC / B站 / 爱奇艺等视频播放器全屏观看时生效，退出全屏立即恢复。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <TextBlock Text="应用黑名单" Style="{StaticResource SectionTitle}" Margin="0" VerticalAlignment="Center" />
+                                    <Button Content="刷新当前运行程序" HorizontalAlignment="Right"
+                                            Style="{StaticResource FlatButton}" Click="OnRefreshRunningAppsClick" />
+                                </Grid>
+
+                                <CheckBox x:Name="DndBlacklistEnabledBox" FontSize="12.5" Margin="0,0,0,10"
+                                          Content="启用应用黑名单（以下程序处于前台时屏蔽所有翻译热键）" />
+
+                                <TextBlock Text="当前正在运行的程序（勾选即加入黑名单）" FontSize="12"
+                                           Foreground="{DynamicResource BrushTextSecondary}" Margin="0,0,0,6" />
+
+                                <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8"
+                                        Background="{DynamicResource BrushSubPanelBg}" MaxHeight="165" Margin="0,0,0,12">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="10,8">
+                                        <StackPanel x:Name="RunningAppsPanel" />
+                                    </ScrollViewer>
+                                </Border>
+
+                                <TextBlock Text="手动添加进程名（未启动的游戏或程序也可提前加入）" FontSize="12"
+                                           Foreground="{DynamicResource BrushTextSecondary}" Margin="0,0,0,6" />
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="BlacklistInputBox" Grid.Column="0"
+                                             ToolTip="输入进程名（带不带 .exe 均可），例如 YuanShen.exe 或 Weixin"
+                                             KeyDown="OnBlacklistInputKeyDown" />
+                                    <Button Grid.Column="1" Content="添加" Style="{StaticResource FlatButton}"
+                                            Padding="14,5" Margin="8,0,0,0" Click="OnAddBlacklistClick" />
+                                </Grid>
+
+                                <TextBlock x:Name="BlacklistSummaryText" Text="已加入黑名单的程序" FontSize="12"
+                                           Foreground="{DynamicResource BrushTextSecondary}" Margin="0,0,0,6" />
+                                <WrapPanel x:Name="BlacklistTagsPanel" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                           Text="按需检测，仅在按下热键瞬间读取当前前台进程名，不常驻后台轮询、不增加待机内存。" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ==================== 5. 朗读与关于 ==================== -->
+                    <StackPanel x:Name="PageAbout" Visibility="Collapsed">
+                        <TextBlock Text="语音朗读与关于" Style="{StaticResource PageHeader}" />
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="离线语音朗读" Style="{StaticResource SectionTitle}" />
+
+                                <CheckBox x:Name="TtsEnabledBox" FontSize="12.5" Margin="0,0,0,10"
+                                          Content="在浮窗上显示朗读按钮（🔊）" />
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="中文音色" FontSize="12.5" VerticalAlignment="Center" Width="62" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="TtsVoiceZhBox"
+                                              Width="240" Margin="8,0,0,0" />
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="英文音色" FontSize="12.5" VerticalAlignment="Center" Width="62" />
+                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="TtsVoiceEnBox"
+                                              Width="240" Margin="8,0,0,0" />
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="语速" FontSize="12.5" VerticalAlignment="Center" Width="62" />
+                                    <Slider x:Name="TtsRateSlider" PreviewMouseWheel="OnComboWheel"
+                                            Minimum="-50" Maximum="100" Value="0" Width="200"
+                                            Margin="8,0,0,0" VerticalAlignment="Center"
+                                            ValueChanged="OnTtsRateChanged" />
+                                    <TextBlock x:Name="TtsRateLabel" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}"
+                                               VerticalAlignment="Center" Margin="10,0,0,0" Text="常速" />
+                                </StackPanel>
+
+                                <TextBlock x:Name="TtsHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                           Text="使用 Windows 自带语音包，完全离线。想加更多音色，在系统「设置 → 时间和语言 → 语音」里添加。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="关于与更新" Style="{StaticResource SectionTitle}" />
+
+                                <Grid Margin="0,2,0,10">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="当前版本" FontSize="12.5" Foreground="{DynamicResource BrushTextSecondary}"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock x:Name="VersionText" FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource BrushTextPrimary}" Margin="8,0,0,0"
+                                                   VerticalAlignment="Center" Text="—" />
+                                    </StackPanel>
+                                    <Button x:Name="CheckUpdateButton" Content="检查更新"
+                                            HorizontalAlignment="Right" Style="{StaticResource FlatButton}"
+                                            Padding="14,4" Click="OnCheckUpdateClick" />
+                                </Grid>
+
+                                <TextBlock x:Name="UpdateHint" Style="{StaticResource Hint}"
+                                           Margin="0,0,0,10" Text="" />
+
+                                <CheckBox x:Name="HistoryEnabledBox" FontSize="12.5" Margin="0,0,0,12"
+                                          Content="记录最近 100 条翻译历史（仅保存在本地 history.json，不占待机内存）" />
+
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="管理组件（引擎 / 模型）…" HorizontalAlignment="Left"
+                                            Style="{StaticResource FlatButton}" Padding="14,5"
+                                            Click="OnOpenComponentsClick" />
+                                    <Button Content="查看翻译历史" HorizontalAlignment="Left"
+                                            Style="{StaticResource FlatButton}" Padding="14,5" Margin="10,0,0,0"
+                                            Click="OnOpenHistoryClick" />
+                                    <Button Content="查看使用引导" HorizontalAlignment="Left"
+                                            Style="{StaticResource FlatButton}" Padding="14,5" Margin="10,0,0,0"
+                                            Click="OnOpenWelcomeClick" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                </Grid>
+            </ScrollViewer>
+        </Grid>
+
+        <Border Grid.Row="1" Background="{DynamicResource BrushCardBg}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Padding="20,12">
             <Grid>
-                <TextBlock x:Name="SaveHint" FontSize="11.5" Foreground="#8A8A93" VerticalAlignment="Center" />
+                <TextBlock x:Name="SaveHint" FontSize="11.5" Foreground="{DynamicResource BrushTextMuted}" VerticalAlignment="Center" />
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="取消" Style="{StaticResource FlatButton}" Padding="16,7"
                             Click="OnCancelClick" />

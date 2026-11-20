@@ -26,13 +26,20 @@ public partial class App : System.Windows.Application
     private WinForms.NotifyIcon? _tray;
     private HotkeyManager? _hotkey;
     private HotkeyManager? _ocrHotkey;
+    private HotkeyManager? _replaceHotkey;
+    private ClipboardWatcher? _clipboardWatcher;
     private EngineManager? _engine;
     private AppIpcServer? _ipc;
     private Process? _settingsProc;
     private IntPtr _settingsChildHwnd;
     private Process? _inputProc;
     private IntPtr _inputChildHwnd;
+    private Process? _popupProc;
+    private IntPtr _popupChildHwnd;
+    private string? _pendingTranslateJobJson;
     private Process? _componentProc;
+    private Process? _historyProc;
+    private IntPtr _historyChildHwnd;
     private AppConfig _config = null!;
     private PopupWindow? _popup;
     private SettingsWindow? _settingsWin;
@@ -43,6 +50,7 @@ public partial class App : System.Windows.Application
     private System.Windows.Threading.DispatcherTimer? _idleTimer;
     private string _currentSource = "";
     private string _currentTarget = "";
+    private string _currentMode = "translate";
 
     private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "quicktrans.log");
 
@@ -92,6 +100,21 @@ public partial class App : System.Windows.Application
         if (e.Args.Any(a => a.Equals("--input-child", StringComparison.OrdinalIgnoreCase)))
         {
             RunInputChild();
+            return;
+        }
+        if (e.Args.Any(a => a.Equals("--translate-child", StringComparison.OrdinalIgnoreCase)))
+        {
+            RunPopupChild(ocrMode: false);
+            return;
+        }
+        if (e.Args.Any(a => a.Equals("--ocr-child", StringComparison.OrdinalIgnoreCase)))
+        {
+            RunPopupChild(ocrMode: true);
+            return;
+        }
+        if (e.Args.Any(a => a.Equals("--history-child", StringComparison.OrdinalIgnoreCase)))
+        {
+            RunHistoryChild();
             return;
         }
 
@@ -249,8 +272,15 @@ public partial class App : System.Windows.Application
         var ocrItem = new WinForms.ToolStripMenuItem($"截图翻译  ({_config.OcrHotkey})");
         ocrItem.Click += async (_, _) => await StartOcrAsync();
 
+        var repKey = string.IsNullOrWhiteSpace(_config.ReplaceHotkey) ? "Alt+R" : _config.ReplaceHotkey;
+        var replaceItem = new WinForms.ToolStripMenuItem($"替换翻译  ({repKey})");
+        replaceItem.Click += async (_, _) => await ReplaceSelectionAsync();
+
         var inputItem = new WinForms.ToolStripMenuItem("手动输入翻译");
         inputItem.Click += (_, _) => OpenInputPopup();
+
+        var historyItem = new WinForms.ToolStripMenuItem("翻译历史…");
+        historyItem.Click += (_, _) => OpenHistory();
 
         var settingsItem = new WinForms.ToolStripMenuItem("设置…");
         settingsItem.Click += (_, _) => OpenSettings();
@@ -273,7 +303,9 @@ public partial class App : System.Windows.Application
 
         menu.Items.Add(translateItem);
         menu.Items.Add(ocrItem);
+        menu.Items.Add(replaceItem);
         menu.Items.Add(inputItem);
+        menu.Items.Add(historyItem);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(modelMenu);
         menu.Items.Add(componentsItem);
@@ -385,8 +417,148 @@ public partial class App : System.Windows.Application
         _ocrHotkey.Pressed -= OnOcrHotkey;
         _ocrHotkey.Pressed += OnOcrHotkey;
         if (!_ocrHotkey.Register(_config.OcrHotkey))
+        {
             Log("ocr hotkey FAILED: " + _ocrHotkey.LastError);
+            _tray?.ShowBalloonTip(4000, "截图热键注册失败",
+                $"{_config.OcrHotkey} 被其他程序占用，请到设置里换一个。", WinForms.ToolTipIcon.Warning);
+        }
         else Log("ocr hotkey: " + _config.OcrHotkey);
+
+        var repKey = string.IsNullOrWhiteSpace(_config.ReplaceHotkey) ? "Alt+R" : _config.ReplaceHotkey;
+        _replaceHotkey ??= new HotkeyManager();
+        _replaceHotkey.Pressed -= OnReplaceHotkey;
+        _replaceHotkey.Pressed += OnReplaceHotkey;
+        if (!_replaceHotkey.Register(repKey))
+        {
+            Log("replace hotkey FAILED: " + _replaceHotkey.LastError);
+            _tray?.ShowBalloonTip(4000, "替换翻译热键注册失败",
+                $"{repKey} 被其他程序占用，请到设置 → 常规与热键里更换。", WinForms.ToolTipIcon.Warning);
+        }
+        else Log("replace hotkey: " + repKey);
+
+        _clipboardWatcher ??= new ClipboardWatcher();
+        _clipboardWatcher.DoubleCopyDetected -= OnDoubleCopyDetected;
+        _clipboardWatcher.DoubleCopyDetected += OnDoubleCopyDetected;
+        _clipboardWatcher.SetEnabled(_config.DoubleCtrlCEnabled);
+    }
+
+    private async void OnDoubleCopyDetected(string text, IntPtr sourceHwnd)
+    {
+        if (DndService.ShouldBlock(_config, out var reason))
+        {
+            Log("dnd blocked (double Ctrl+C): " + reason);
+            return;
+        }
+        Log($"double Ctrl+C detected: len={text.Length} hwnd={sourceHwnd}");
+        if (_config.SmartJoinLines) text = TextGrabber.CleanLineBreaks(text);
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        if (_config.PopupIsolateProcess && !string.IsNullOrWhiteSpace(Environment.ProcessPath))
+        {
+            if (_popup is { IsVisible: true }) { _popup.Close(); _popup = null; }
+            if (_popupProc is { HasExited: false }) ClosePopupChild();
+            if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase)
+                && _engine != null && !_engine.IsReady)
+                _ = PrewarmAsync();
+            LaunchTranslateChild(text, sourceHwnd, null);
+            return;
+        }
+
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        _popup?.Close();
+        _popup = CreatePopup();
+        _popup.Show();
+        _popup.SetSourceWindow(sourceHwnd);
+        _popup.SetAnchor(null);
+        await TranslateTextAsync(text);
+    }
+
+    private async void OnReplaceHotkey(object? sender, EventArgs e)
+    {
+        if (DndService.ShouldBlock(_config, out var reason))
+        {
+            Log("dnd blocked (replace): " + reason);
+            return;
+        }
+        Log("replace hotkey pressed");
+        await ReplaceSelectionAsync();
+    }
+
+    /// <summary>
+    /// 一键替换翻译（快捷键触发）：取当前选中文本 → 翻译 → 直接粘贴替换原窗口选区。
+    /// 若翻译完成前用户已切走窗口，则把译文写入剪贴板并气泡提示，不误贴到其它窗口。
+    /// </summary>
+    private async Task ReplaceSelectionAsync()
+    {
+        string? text;
+        IntPtr sourceHwnd;
+        try
+        {
+            text = TextGrabber.Grab(_config.GrabMode);
+            sourceHwnd = TextGrabber.LastSourceHwnd;
+        }
+        catch (Exception ex)
+        {
+            Log("replace grab failed: " + ex.Message);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(text)) return;
+        if (_config.SmartJoinLines) text = TextGrabber.CleanLineBreaks(text);
+
+        var target = TranslationService.ResolveTarget(text, _config);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var ct = cts.Token;
+
+        try
+        {
+            var baseUrl = "";
+            if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
+            {
+                var ready = await EnsureEngineAsync(ct);
+                if (!ready.Ok)
+                {
+                    try { _tray?.ShowBalloonTip(3500, "替换翻译失败", ready.Message, WinForms.ToolTipIcon.Warning); } catch { }
+                    return;
+                }
+                baseUrl = _engine!.BaseUrl;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            await Task.Run(async () =>
+            {
+                await foreach (var piece in TranslationService.TranslateAsync(text, _config, baseUrl, target, ct))
+                    sb.Append(piece);
+            }, ct);
+
+            _engine?.MarkUsed();
+
+            var translated = PopupWindow.StripPreamble(
+                System.Text.RegularExpressions.Regex.Replace(sb.ToString(), @"/nt/n|/n(?![A-Za-z0-9_])", "\n")).Trim();
+            if (string.IsNullOrWhiteSpace(translated)) return;
+
+            if (_config.HistoryEnabled)
+                HistoryService.Add(text, translated, target, "translate", EngineLabel());
+
+            var pasted = await Task.Run(() => TextGrabber.PasteToWindow(sourceHwnd, translated));
+            Log($"replace done: pasted={pasted} len={translated.Length}");
+            if (!pasted)
+            {
+                try
+                {
+                    ClipboardWatcher.SuppressFor(700);
+                    Clipboard.SetText(translated);
+                    _tray?.ShowBalloonTip(3000, "译文已复制", "原窗口已不可用，译文已放入剪贴板。", WinForms.ToolTipIcon.Info);
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("replace translate failed: " + ex.Message);
+            try { _tray?.ShowBalloonTip(3500, "替换翻译失败", ex.Message, WinForms.ToolTipIcon.Warning); } catch { }
+        }
     }
 
     private async void OnTranslateHotkey(object? sender, EventArgs e)
@@ -397,6 +569,11 @@ public partial class App : System.Windows.Application
             CloseInputChild();
             return;
         }
+        if (_popupProc is { HasExited: false })
+        {
+            ClosePopupChild();
+            return;
+        }
         if (_popup is { IsVisible: true })
         {
             _popup.Close();
@@ -404,11 +581,21 @@ public partial class App : System.Windows.Application
             _cts?.Cancel();
             return;
         }
+        if (DndService.ShouldBlock(_config, out var reason))
+        {
+            Log("dnd blocked (translate): " + reason);
+            return;
+        }
         await TranslateSelectionAsync();
     }
 
     private async void OnOcrHotkey(object? sender, EventArgs e)
     {
+        if (DndService.ShouldBlock(_config, out var reason))
+        {
+            Log("dnd blocked (ocr): " + reason);
+            return;
+        }
         Log("ocr hotkey pressed");
         await StartOcrAsync();
     }
@@ -464,9 +651,12 @@ public partial class App : System.Windows.Application
         PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
 
         var popup = new PopupWindow();
-        popup.ApplyOpacity(_config.PopupOpacity);
+        popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+        popup.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
 
         popup.LanguageRequested += async lang => await OnLanguageRequestedAsync(lang);
+        popup.ModeRequested += async mode => await OnModeRequestedAsync(mode);
+        popup.HistoryRequested += () => OpenHistory();
         popup.ManualTextSubmitted += async text => await OnManualSubmitAsync(text);
         popup.OcrRequested += async () => await StartOcrAsync();
 
@@ -532,6 +722,12 @@ public partial class App : System.Windows.Application
         };
 
         popup.ApplyTtsVisibility(_config.TtsEnabled);
+        popup.ApplyHotkeyHints(_config.OcrHotkey, _config.ReplaceHotkey);
+        popup.ReplaceRequested += (translated, sourceHwnd) =>
+        {
+            popup.Close();
+            _ = Task.Run(() => TextGrabber.PasteToWindow(sourceHwnd, translated));
+        };
         return popup;
     }
 
@@ -539,6 +735,48 @@ public partial class App : System.Windows.Application
     {
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
+
+        // 极低待机内存模式：取词后把浮窗、流式渲染与朗读放进独立短生命周期子进程，
+        // 关窗即退出进程，WPF 渲染缓存与系统组件内存 100% 归还系统，主程序稳在 ~20MB。
+        if (_config.PopupIsolateProcess && !string.IsNullOrWhiteSpace(Environment.ProcessPath))
+        {
+            if (_popup is { IsVisible: true })
+            {
+                _popup.Close();
+                _popup = null;
+            }
+            if (_popupProc is { HasExited: false }) ClosePopupChild();
+
+            string? isolatedText;
+            try
+            {
+                Log("grab start, mode=" + _config.GrabMode);
+                isolatedText = TextGrabber.Grab(_config.GrabMode);
+                Log($"grab done: via={TextGrabber.LastMethod} len={isolatedText?.Length ?? 0}");
+            }
+            catch (Exception ex)
+            {
+                Log("grab threw: " + ex);
+                isolatedText = null;
+            }
+
+            if (string.IsNullOrWhiteSpace(isolatedText))
+            {
+                OpenInputPopup("没有选中文本，输入后按 Ctrl+Enter 翻译");
+                return;
+            }
+            if (_config.SmartJoinLines) isolatedText = TextGrabber.CleanLineBreaks(isolatedText);
+
+            // 模型若未就绪，与拉起浮窗子进程并行预加载，减少冷启动总等待时间
+            if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase)
+                && _engine != null && !_engine.IsReady)
+            {
+                _ = PrewarmAsync();
+            }
+
+            LaunchTranslateChild(isolatedText, TextGrabber.LastSourceHwnd, TextGrabber.LastSelectionRect);
+            return;
+        }
 
         _popup?.Close();
         _popup = CreatePopup();
@@ -567,6 +805,7 @@ public partial class App : System.Windows.Application
             OpenInputPopup("没有选中文本，输入后按 Ctrl+Enter 翻译");
             return;
         }
+        if (_config.SmartJoinLines) text = TextGrabber.CleanLineBreaks(text);
 
         // 记录取字来源窗口：前台窗口切走它才启动自动关闭倒计时
         _popup.SetSourceWindow(TextGrabber.LastSourceHwnd);
@@ -676,6 +915,12 @@ public partial class App : System.Windows.Application
         await TranslateTextAsync(text, forcedTarget: target, fromInput: true);
     }
 
+    private static string FormatModeStatus(string mode, string target, bool isDict) =>
+        isDict ? "词典查询 …"
+        : string.Equals(mode, "polish", StringComparison.OrdinalIgnoreCase) ? "正在润色 …"
+        : string.Equals(mode, "explain", StringComparison.OrdinalIgnoreCase) ? "正在解释 …"
+        : $"翻译为 {target} …";
+
     /// <summary>翻译一段确定的文本。forcedTarget 为空时按自动方向决定。</summary>
     private async Task TranslateTextAsync(string source, string? forcedTarget = null, bool fromInput = false)
     {
@@ -686,6 +931,7 @@ public partial class App : System.Windows.Application
         }
 
         _currentSource = source;
+        if (!fromInput) _currentMode = "translate";
 
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
@@ -694,16 +940,24 @@ public partial class App : System.Windows.Application
         var target = TranslationService.ResolveTarget(source, _config, forcedTarget);
         _currentTarget = target;
 
+        var supportsModes = TranslationService.SupportsPromptModes(_config);
+        var effectiveMode = supportsModes ? _currentMode : "translate";
+        var isDict = _config.WordDictEnabled
+                     && supportsModes
+                     && string.Equals(effectiveMode, "translate", StringComparison.OrdinalIgnoreCase)
+                     && TranslationService.IsSingleEnglishWord(source);
+
         // 全程用局部变量引用“这一次”的浮窗：后台线程和 await 之后再读 _popup 字段，
         // 可能已经被关掉置空（空引用），或换成了下一次翻译的新浮窗（旧译文串进新窗口）。
         var popup = _popup;
 
         popup.ConfigureLanguages(_config.QuickLanguages, target);
+        popup.ConfigureMode(effectiveMode, supportsModes);
 
         if (fromInput) popup.StartManualTranslate(EngineLabel(), target);
         else popup.ShowSource(source, EngineLabel());
 
-        popup.SetStatus($"翻译为 {target} …");
+        popup.SetStatus(FormatModeStatus(effectiveMode, target, isDict));
 
         try
         {
@@ -717,7 +971,7 @@ public partial class App : System.Windows.Application
                 }
             }
 
-            Log($"translate start -> {target}");
+            Log($"translate start -> {target} mode={effectiveMode} dict={isDict}");
             popup.StartStreaming();
 
             // 把翻译数据的接收放到后台线程：await foreach 在后台消费 token，
@@ -728,7 +982,7 @@ public partial class App : System.Windows.Application
             await Task.Run(async () =>
             {
                 await foreach (var piece in TranslationService.TranslateAsync(
-                    source, _config, baseUrl, target, ct))
+                    source, _config, baseUrl, target, ct, effectiveMode, isDict))
                 {
                     popup.AppendChunk(piece);
                 }
@@ -738,7 +992,12 @@ public partial class App : System.Windows.Application
             _engine?.MarkUsed();
 
             // 回 UI 线程收尾
-            if (!ct.IsCancellationRequested) popup.Finish();
+            if (!ct.IsCancellationRequested)
+            {
+                popup.Finish();
+                if (_config.HistoryEnabled && !string.IsNullOrWhiteSpace(popup.CurrentResult))
+                    HistoryService.Add(source, popup.CurrentResult, target, isDict ? "dict" : effectiveMode, EngineLabel());
+            }
         }
         catch (OperationCanceledException)
         {
@@ -751,6 +1010,22 @@ public partial class App : System.Windows.Application
             Log("translate failed: " + ex.Message);
             if (!ct.IsCancellationRequested) popup.ShowError("翻译失败：" + ex.Message);
         }
+    }
+
+    private async Task OnModeRequestedAsync(string mode)
+    {
+        _currentMode = mode;
+        if (string.IsNullOrWhiteSpace(_currentSource))
+        {
+            _popup?.SetStatus(mode switch
+            {
+                "polish" => "润色模式 · 输入后按 Ctrl+Enter",
+                "explain" => "解释模式 · 输入后按 Ctrl+Enter",
+                _ => $"将翻译为 {_currentTarget} · 输入后按 Ctrl+Enter",
+            });
+            return;
+        }
+        await RetranslateAsync(_currentTarget);
     }
 
     /// <summary>
@@ -779,13 +1054,23 @@ public partial class App : System.Windows.Application
 
         var popup = _popup;
         if (popup == null) return;
+
+        var source = _currentSource;
+        var supportsModes = TranslationService.SupportsPromptModes(_config);
+        var effectiveMode = supportsModes ? _currentMode : "translate";
+        var isDict = _config.WordDictEnabled
+                     && supportsModes
+                     && string.Equals(effectiveMode, "translate", StringComparison.OrdinalIgnoreCase)
+                     && TranslationService.IsSingleEnglishWord(source);
+
         popup.ConfigureLanguages(_config.QuickLanguages, target);
+        popup.ConfigureMode(effectiveMode, supportsModes);
         popup.StartTranslate(target);
+        popup.SetStatus(FormatModeStatus(effectiveMode, target, isDict));
 
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
-        var source = _currentSource;
 
         try
         {
@@ -805,14 +1090,19 @@ public partial class App : System.Windows.Application
             await Task.Run(async () =>
             {
                 await foreach (var piece in TranslationService.TranslateAsync(
-                    source, _config, baseUrl, target, ct))
+                    source, _config, baseUrl, target, ct, effectiveMode, isDict))
                 {
                     popup.AppendChunk(piece);
                 }
             }, ct);
 
             _engine?.MarkUsed();
-            if (!ct.IsCancellationRequested) popup.Finish();
+            if (!ct.IsCancellationRequested)
+            {
+                popup.Finish();
+                if (_config.HistoryEnabled && !string.IsNullOrWhiteSpace(popup.CurrentResult))
+                    HistoryService.Add(source, popup.CurrentResult, target, isDict ? "dict" : effectiveMode, EngineLabel());
+            }
         }
         catch (OperationCanceledException)
         {
@@ -826,6 +1116,23 @@ public partial class App : System.Windows.Application
 
     private async Task StartOcrAsync()
     {
+        // 极低待机内存模式：截图框选、WinRT OCR 与译文浮窗全部在独立子进程里执行，
+        // 关窗后 OCR 语言包、位图与 WPF 缓存立即彻底释放。
+        if (_config.PopupIsolateProcess && !string.IsNullOrWhiteSpace(Environment.ProcessPath))
+        {
+            if (_popup is { IsVisible: true })
+            {
+                _cts?.Cancel();
+                _popup.Close();
+                _popup = null;
+            }
+            if (_popupProc is { HasExited: false }) ClosePopupChild();
+            if (_inputProc is { HasExited: false }) CloseInputChild();
+
+            LaunchPopupChildProcess("--ocr-child");
+            return;
+        }
+
         // 选择区域时先把浮窗收起来，免得挡住要识别的内容
         var previousSource = _currentSource;
         if (_popup is { IsVisible: true })
@@ -865,6 +1172,7 @@ public partial class App : System.Windows.Application
         }
 
         Log($"ocr ok, {text.Length} chars");
+        if (_config.SmartJoinLines) text = TextGrabber.CleanLineBreaks(text);
         await TranslateTextAsync(text);
     }
 
@@ -1032,6 +1340,9 @@ public partial class App : System.Windows.Application
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+    [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
@@ -1047,7 +1358,7 @@ public partial class App : System.Windows.Application
             var cfg = AppConfig.Load();
             var engine = new EngineManager(AppContext.BaseDirectory, cfg.EngineVariant);
 
-            // 向主进程查询当前已加载的模型路径，用于显示「已加载」角标
+            // 向主进程查询已加载模型路径 + 已有窗口矩形（用于智能避让定位，避免遮挡浮窗/历史窗）
             string? loadedPath = null;
             var status = await AppIpcClient.SendAsync("GET_STATUS", connectTimeoutMs: 1000);
             if (status != null && status.StartsWith("OK\t", StringComparison.Ordinal))
@@ -1056,18 +1367,20 @@ public partial class App : System.Windows.Application
                 if (!string.IsNullOrWhiteSpace(p)) loadedPath = p;
             }
 
-            var win = new SettingsWindow(cfg, engine, childMode: true, loadedModelPath: loadedPath)
-            {
-                WindowStartupLocation = WindowStartupLocation.CenterScreen,
-            };
+            var rectsReply = await AppIpcClient.SendAsync("GET_WINDOW_RECTS\tsettings", connectTimeoutMs: 600);
+            var avoidRects = rectsReply != null && rectsReply.StartsWith("OK\t", StringComparison.Ordinal)
+                ? WindowPlacer.ParseRects(rectsReply[3..])
+                : new List<Int32Rect>();
+
+            var win = new SettingsWindow(cfg, engine, childMode: true, loadedModelPath: loadedPath);
+            WindowPlacer.PlaceAvoiding(win, avoidRects);
             MainWindow = win;
             win.Closed += (_, _) =>
             {
                 engine.Dispose();
                 Shutdown();
             };
-            win.Show();
-            win.Activate();
+            WindowPlacer.SurfaceWindow(win);
 
             // 把精确的设置窗口句柄上报主进程（避免 Process.MainWindowHandle 误拿到输入法隐藏窗）
             var hwnd = new WindowInteropHelper(win).Handle;
@@ -1116,6 +1429,33 @@ public partial class App : System.Windows.Application
         }
     }
 
+    private async void RunHistoryChild()
+    {
+        try
+        {
+            var cfg = AppConfig.Load();
+            var rectsReply = await AppIpcClient.SendAsync("GET_WINDOW_RECTS\thistory", connectTimeoutMs: 600);
+            var avoidRects = rectsReply != null && rectsReply.StartsWith("OK\t", StringComparison.Ordinal)
+                ? WindowPlacer.ParseRects(rectsReply[3..])
+                : new List<Int32Rect>();
+
+            var win = new HistoryWindow(cfg.Theme);
+            WindowPlacer.PlaceAvoiding(win, avoidRects);
+            MainWindow = win;
+            win.Closed += (_, _) => Shutdown();
+            WindowPlacer.SurfaceWindow(win);
+
+            var hwnd = new WindowInteropHelper(win).Handle;
+            if (hwnd != IntPtr.Zero)
+                _ = AppIpcClient.SendAsync($"HISTORY_HWND\t{hwnd.ToInt64()}");
+        }
+        catch (Exception ex)
+        {
+            Log("history-child failed: " + ex);
+            Shutdown();
+        }
+    }
+
     /// <summary>
     /// 手动输入模式子进程：承载带键盘焦点的输入浮窗，输入法与朗读语音库只加载在本进程内；
     /// 关闭浮窗即退出进程，100% 释放输入法与显卡驱动内存，同时复用主进程持有的本地模型。
@@ -1127,6 +1467,7 @@ public partial class App : System.Windows.Application
             _config = AppConfig.Load();
             _currentSource = "";
             _currentTarget = _config.TargetLanguage;
+            _currentMode = "translate";
 
             var hint = "输入后按 Ctrl+Enter 翻译";
             const string prefix = "--input-hint=";
@@ -1148,15 +1489,17 @@ public partial class App : System.Windows.Application
 
             var popup = new PopupWindow();
             MainWindow = popup;
-            popup.ApplyOpacity(_config.PopupOpacity);
+            popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
             popup.ApplyTtsVisibility(_config.TtsEnabled);
+            popup.ApplyHotkeyHints(_config.OcrHotkey, _config.ReplaceHotkey);
             popup.ConfigureLanguages(_config.QuickLanguages, _currentTarget);
+            popup.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
 
             async Task RunTranslateAsync(string source, string? forcedTarget)
             {
                 // 每次翻译前重读一次配置，保证在设置页刚改完的接口/模型立即生效
                 _config = AppConfig.Load();
-                popup.ApplyOpacity(_config.PopupOpacity);
+                popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
                 popup.ApplyTtsVisibility(_config.TtsEnabled);
 
                 _currentSource = source;
@@ -1167,7 +1510,15 @@ public partial class App : System.Windows.Application
                 var target = TranslationService.ResolveTarget(source, _config, forcedTarget);
                 _currentTarget = target;
 
+                var supportsModes = TranslationService.SupportsPromptModes(_config);
+                var effectiveMode = supportsModes ? _currentMode : "translate";
+                var isDict = _config.WordDictEnabled
+                             && supportsModes
+                             && string.Equals(effectiveMode, "translate", StringComparison.OrdinalIgnoreCase)
+                             && TranslationService.IsSingleEnglishWord(source);
+
                 popup.ConfigureLanguages(_config.QuickLanguages, target);
+                popup.ConfigureMode(effectiveMode, supportsModes);
                 popup.StartManualTranslate(EngineLabel(), target);
 
                 try
@@ -1191,13 +1542,13 @@ public partial class App : System.Windows.Application
                         }
                     }
 
-                    popup.SetStatus($"翻译为 {target} …");
+                    popup.SetStatus(FormatModeStatus(effectiveMode, target, isDict));
                     popup.StartStreaming();
 
                     await Task.Run(async () =>
                     {
                         await foreach (var piece in TranslationService.TranslateAsync(
-                            source, _config, baseUrl, target, ct))
+                            source, _config, baseUrl, target, ct, effectiveMode, isDict))
                         {
                             popup.AppendChunk(piece);
                         }
@@ -1206,7 +1557,12 @@ public partial class App : System.Windows.Application
                     if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
                         _ = AppIpcClient.SendAsync("MARK_USED");
 
-                    if (!ct.IsCancellationRequested) popup.Finish();
+                    if (!ct.IsCancellationRequested)
+                    {
+                        popup.Finish();
+                        if (_config.HistoryEnabled && !string.IsNullOrWhiteSpace(popup.CurrentResult))
+                            HistoryService.Add(source, popup.CurrentResult, target, isDict ? "dict" : effectiveMode, EngineLabel());
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -1234,6 +1590,28 @@ public partial class App : System.Windows.Application
                     return;
                 }
                 await RunTranslateAsync(_currentSource, lang);
+            };
+
+            popup.ModeRequested += async mode =>
+            {
+                _currentMode = mode;
+                if (string.IsNullOrWhiteSpace(_currentSource))
+                {
+                    popup.SetStatus(mode switch
+                    {
+                        "polish" => "润色模式 · 输入后按 Ctrl+Enter",
+                        "explain" => "解释模式 · 输入后按 Ctrl+Enter",
+                        _ => $"将翻译为 {_currentTarget} · 输入后按 Ctrl+Enter",
+                    });
+                    return;
+                }
+                await RunTranslateAsync(_currentSource, _currentTarget);
+            };
+
+            popup.HistoryRequested += () =>
+            {
+                popup.BeginOpeningAuxWindow();
+                _ = AppIpcClient.SendAsync("OPEN_HISTORY");
             };
 
             popup.SpeakRequested += async text =>
@@ -1276,7 +1654,11 @@ public partial class App : System.Windows.Application
                 _ = AppIpcClient.SendAsync("RELOAD_CONFIG");
             };
 
-            popup.SettingsRequested += () => _ = AppIpcClient.SendAsync("OPEN_SETTINGS");
+            popup.SettingsRequested += () =>
+            {
+                popup.BeginOpeningAuxWindow();
+                _ = AppIpcClient.SendAsync("OPEN_SETTINGS");
+            };
 
             popup.OcrRequested += () =>
             {
@@ -1303,6 +1685,332 @@ public partial class App : System.Windows.Application
         catch (Exception ex)
         {
             Log("input-child failed: " + ex);
+            Shutdown();
+        }
+    }
+
+    private sealed record TranslateJobPayload(
+        string Text, long SourceHwnd, bool HasAnchor, int AnchorX, int AnchorY, int AnchorW, int AnchorH);
+
+    private void LaunchTranslateChild(string text, IntPtr sourceHwnd, Int32Rect? anchor)
+    {
+        var hasAnchor = anchor.HasValue && anchor.Value.Width > 4 && anchor.Value.Height > 4;
+        var payload = new TranslateJobPayload(
+            text,
+            sourceHwnd.ToInt64(),
+            hasAnchor,
+            hasAnchor ? anchor!.Value.X : 0,
+            hasAnchor ? anchor!.Value.Y : 0,
+            hasAnchor ? anchor!.Value.Width : 0,
+            hasAnchor ? anchor!.Value.Height : 0);
+
+        _pendingTranslateJobJson = System.Text.Json.JsonSerializer.Serialize(payload);
+        LaunchPopupChildProcess("--translate-child");
+    }
+
+    private void LaunchPopupChildProcess(string args)
+    {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe)) return;
+
+        try
+        {
+            var proc = Process.Start(new ProcessStartInfo(exe, args)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            if (proc == null) return;
+
+            _popupProc = proc;
+            _popupChildHwnd = IntPtr.Zero;
+            Log($"LaunchPopupChild({args}): pid={proc.Id}");
+
+            _ = proc.WaitForExitAsync().ContinueWith(_ =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (ReferenceEquals(_popupProc, proc))
+                    {
+                        _popupProc = null;
+                        _popupChildHwnd = IntPtr.Zero;
+                    }
+                    try { proc.Dispose(); } catch { }
+                }));
+            });
+        }
+        catch (Exception ex)
+        {
+            Log($"launch popup child ({args}) failed: " + ex.Message);
+        }
+    }
+
+    private void ClosePopupChild()
+    {
+        if (_popupChildHwnd != IntPtr.Zero)
+        {
+            PostMessage(_popupChildHwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            return;
+        }
+        try { if (_popupProc is { HasExited: false }) _popupProc.Kill(); } catch { }
+    }
+
+    /// <summary>
+    /// 独立子进程模式下的划词翻译 / 截图 OCR 浮窗：
+    /// 完整复刻主进程的浮窗体验，关窗即退出进程释放全部 WPF/OCR/朗读内存，
+    /// 并通过本地 IPC 复用主进程持有的本地模型。
+    /// </summary>
+    private async void RunPopupChild(bool ocrMode)
+    {
+        try
+        {
+            _config = AppConfig.Load();
+            _currentSource = "";
+            _currentTarget = _config.TargetLanguage;
+
+            Int32Rect? ocrRegion = null;
+            TranslateJobPayload? job = null;
+
+            if (ocrMode)
+            {
+                var selector = new ScreenSelector();
+                selector.ShowDialog();
+                ocrRegion = selector.SelectedRegion;
+                if (ocrRegion == null)
+                {
+                    Shutdown();
+                    return;
+                }
+            }
+            else
+            {
+                var raw = await AppIpcClient.SendAsync("FETCH_TRANSLATE_JOB", connectTimeoutMs: 2000);
+                if (string.IsNullOrWhiteSpace(raw) || !raw.StartsWith("OK\t", StringComparison.Ordinal))
+                {
+                    Shutdown();
+                    return;
+                }
+                job = System.Text.Json.JsonSerializer.Deserialize<TranslateJobPayload>(raw[3..]);
+                if (job == null || string.IsNullOrWhiteSpace(job.Text))
+                {
+                    Shutdown();
+                    return;
+                }
+            }
+
+            PopupWindow.AutoCloseEnabled = _config.PopupAutoClose;
+            PopupWindow.AutoCloseSeconds = _config.PopupAutoCloseSeconds;
+            PopupWindow.AutoClosePauseOnHover = _config.PopupAutoClosePauseOnHover;
+            PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
+            PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
+
+            var popup = new PopupWindow();
+            MainWindow = popup;
+            _currentMode = "translate";
+            popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+            popup.ApplyTtsVisibility(_config.TtsEnabled);
+            popup.ApplyHotkeyHints(_config.OcrHotkey, _config.ReplaceHotkey);
+            popup.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
+            popup.ReplaceRequested += (translated, sourceHwnd) =>
+            {
+                // 子进程关窗后再同步粘贴，确保原窗口重新接管粘贴事件后进程才退出
+                popup.Hide();
+                _ = Task.Run(() =>
+                {
+                    TextGrabber.PasteToWindow(sourceHwnd, translated);
+                    Dispatcher.BeginInvoke(new Action(() => popup.Close()));
+                });
+            };
+
+            async Task RunTranslateAsync(string source, string? forcedTarget, bool isRetranslate)
+            {
+                _config = AppConfig.Load();
+                popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+                popup.ApplyTtsVisibility(_config.TtsEnabled);
+
+                _currentSource = source;
+                if (!isRetranslate) _currentMode = "translate";
+                _cts?.Cancel();
+                _cts = new CancellationTokenSource();
+                var ct = _cts.Token;
+
+                var target = TranslationService.ResolveTarget(source, _config, forcedTarget);
+                _currentTarget = target;
+
+                var supportsModes = TranslationService.SupportsPromptModes(_config);
+                var effectiveMode = supportsModes ? _currentMode : "translate";
+                var isDict = _config.WordDictEnabled
+                             && supportsModes
+                             && string.Equals(effectiveMode, "translate", StringComparison.OrdinalIgnoreCase)
+                             && TranslationService.IsSingleEnglishWord(source);
+
+                popup.ConfigureLanguages(_config.QuickLanguages, target);
+                popup.ConfigureMode(effectiveMode, supportsModes);
+                if (isRetranslate) popup.StartTranslate(target);
+                else popup.ShowSource(source, EngineLabel());
+
+                try
+                {
+                    var baseUrl = "";
+                    if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
+                    {
+                        popup.SetStatus("正在准备本地模型…");
+                        var reply = await AppIpcClient.SendAsync("ENSURE_ENGINE", connectTimeoutMs: 2000, ct);
+                        if (reply != null && reply.StartsWith("OK\t", StringComparison.Ordinal))
+                        {
+                            baseUrl = reply[3..];
+                        }
+                        else
+                        {
+                            var msg = reply != null && reply.StartsWith("ERR\t", StringComparison.Ordinal)
+                                ? reply[4..]
+                                : "无法连接到主程序，请重试。";
+                            if (!ct.IsCancellationRequested) popup.ShowError(msg);
+                            return;
+                        }
+                    }
+
+                    popup.SetStatus(FormatModeStatus(effectiveMode, target, isDict));
+                    popup.StartStreaming();
+
+                    await Task.Run(async () =>
+                    {
+                        await foreach (var piece in TranslationService.TranslateAsync(
+                            source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                        {
+                            popup.AppendChunk(piece);
+                        }
+                    }, ct);
+
+                    if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
+                        _ = AppIpcClient.SendAsync("MARK_USED");
+
+                    if (!ct.IsCancellationRequested)
+                    {
+                        popup.Finish();
+                        if (_config.HistoryEnabled && !string.IsNullOrWhiteSpace(popup.CurrentResult))
+                            HistoryService.Add(source, popup.CurrentResult, target, isDict ? "dict" : effectiveMode, EngineLabel());
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    if (!ct.IsCancellationRequested) popup.ShowError("翻译超时，请检查网络或接口设置后重试。");
+                }
+                catch (Exception ex)
+                {
+                    if (!ct.IsCancellationRequested) popup.ShowError("翻译失败：" + ex.Message);
+                }
+            }
+
+            popup.LanguageRequested += async lang =>
+            {
+                if (string.IsNullOrWhiteSpace(_currentSource)) return;
+                await RunTranslateAsync(_currentSource, lang, isRetranslate: true);
+            };
+
+            popup.ModeRequested += async mode =>
+            {
+                _currentMode = mode;
+                if (string.IsNullOrWhiteSpace(_currentSource)) return;
+                await RunTranslateAsync(_currentSource, _currentTarget, isRetranslate: true);
+            };
+
+            popup.HistoryRequested += () =>
+            {
+                popup.BeginOpeningAuxWindow();
+                _ = AppIpcClient.SendAsync("OPEN_HISTORY");
+            };
+
+            popup.SpeakRequested += async text =>
+            {
+                try
+                {
+                    if (_speech is { IsSpeaking: true })
+                    {
+                        _speech.Stop();
+                        return;
+                    }
+                    var lang = TranslationService.IsMostlyChinese(text) ? "zh" : "en";
+                    var speech = _speech ??= new SpeechService();
+                    speech.Stopped -= OnPopupSpeechStopped;
+                    speech.Stopped += OnPopupSpeechStopped;
+                    popup.SetSpeaking(true);
+                    await speech.SpeakAsync(text, lang, _config);
+                }
+                catch (Exception ex)
+                {
+                    Log("popup-child speak failed: " + ex.Message);
+                    popup.SetSpeaking(false);
+                }
+
+                void OnPopupSpeechStopped()
+                {
+                    try
+                    {
+                        if (Dispatcher.CheckAccess()) popup.SetSpeaking(false);
+                        else Dispatcher.BeginInvoke(new Action(() => { try { popup.SetSpeaking(false); } catch { } }));
+                    }
+                    catch { }
+                }
+            };
+
+            popup.QuickLanguagesChanged += langs =>
+            {
+                _config.QuickLanguages = langs;
+                _config.Save();
+                _ = AppIpcClient.SendAsync("RELOAD_CONFIG");
+            };
+
+            popup.SettingsRequested += () =>
+            {
+                popup.BeginOpeningAuxWindow();
+                _ = AppIpcClient.SendAsync("OPEN_SETTINGS");
+            };
+
+            popup.OcrRequested += () =>
+            {
+                _ = AppIpcClient.SendAsync("START_OCR");
+                popup.Close();
+            };
+
+            popup.Closed += async (_, _) =>
+            {
+                _cts?.Cancel();
+                try { _speech?.Stop(); } catch { }
+                try { _speech?.Dispose(); } catch { }
+                try { await AppIpcClient.SendAsync("POPUP_CLOSED", connectTimeoutMs: 400); } catch { }
+                Shutdown();
+            };
+
+            popup.Show();
+            var hwnd = new WindowInteropHelper(popup).Handle;
+            if (hwnd != IntPtr.Zero)
+                _ = AppIpcClient.SendAsync($"POPUP_HWND\t{hwnd.ToInt64()}");
+
+            if (ocrMode && ocrRegion.HasValue)
+            {
+                popup.ShowSource("正在识别截图…", "OCR");
+                var r = ocrRegion.Value;
+                var (ok, text, error) = await OcrService.RecognizeRegionAsync(r.X, r.Y, r.Width, r.Height);
+                if (!ok)
+                {
+                    popup.ShowError(error);
+                    return;
+                }
+                if (_config.SmartJoinLines) text = TextGrabber.CleanLineBreaks(text);
+                await RunTranslateAsync(text, null, isRetranslate: false);
+            }
+            else if (job != null)
+            {
+                if (job.SourceHwnd != 0) popup.SetSourceWindow(new IntPtr(job.SourceHwnd));
+                if (job.HasAnchor) popup.SetAnchor(new Int32Rect(job.AnchorX, job.AnchorY, job.AnchorW, job.AnchorH));
+                else popup.SetAnchor(null);
+                await RunTranslateAsync(job.Text, null, isRetranslate: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("popup-child failed: " + ex);
             Shutdown();
         }
     }
@@ -1336,7 +2044,7 @@ public partial class App : System.Windows.Application
                 await Dispatcher.InvokeAsync(() =>
                 {
                     _settingsChildHwnd = hwnd;
-                    _popup?.SetSettingsWindow(hwnd);
+                    NotifyPopupAuxHwnd(1, hwnd);
                 });
             }
             return "OK";
@@ -1347,8 +2055,84 @@ public partial class App : System.Windows.Application
             if (long.TryParse(command["INPUT_HWND\t".Length..], out var raw))
             {
                 var hwnd = new IntPtr(raw);
-                await Dispatcher.InvokeAsync(() => _inputChildHwnd = hwnd);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _inputChildHwnd = hwnd;
+                    if (_settingsChildHwnd != IntPtr.Zero)
+                        PostMessage(hwnd, ThemeManager.WM_QT_SET_AUX_HWND, new IntPtr(1), _settingsChildHwnd);
+                    if (_historyChildHwnd != IntPtr.Zero)
+                        PostMessage(hwnd, ThemeManager.WM_QT_SET_AUX_HWND, new IntPtr(2), _historyChildHwnd);
+                });
             }
+            return "OK";
+        }
+
+        if (command.StartsWith("POPUP_HWND\t", StringComparison.Ordinal))
+        {
+            if (long.TryParse(command["POPUP_HWND\t".Length..], out var raw))
+            {
+                var hwnd = new IntPtr(raw);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _popupChildHwnd = hwnd;
+                    if (_settingsChildHwnd != IntPtr.Zero)
+                        PostMessage(hwnd, ThemeManager.WM_QT_SET_AUX_HWND, new IntPtr(1), _settingsChildHwnd);
+                    if (_historyChildHwnd != IntPtr.Zero)
+                        PostMessage(hwnd, ThemeManager.WM_QT_SET_AUX_HWND, new IntPtr(2), _historyChildHwnd);
+                });
+            }
+            return "OK";
+        }
+
+        if (command.StartsWith("HISTORY_HWND\t", StringComparison.Ordinal))
+        {
+            if (long.TryParse(command["HISTORY_HWND\t".Length..], out var raw))
+            {
+                var hwnd = new IntPtr(raw);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _historyChildHwnd = hwnd;
+                    NotifyPopupAuxHwnd(2, hwnd);
+                });
+            }
+            return "OK";
+        }
+
+        if (command.StartsWith("PREVIEW_THEME\t", StringComparison.Ordinal))
+        {
+            var parts = command.Split('\t');
+            if (parts.Length >= 3
+                && double.TryParse(parts[2], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var op))
+            {
+                var theme = parts[1];
+                await Dispatcher.InvokeAsync(() => BroadcastThemePreviewToWindows(theme, op));
+            }
+            return "OK";
+        }
+
+        if (command == "FETCH_TRANSLATE_JOB")
+        {
+            var json = Interlocked.Exchange(ref _pendingTranslateJobJson, null);
+            return string.IsNullOrEmpty(json) ? "ERR" : "OK\t" + json;
+        }
+
+        if (command == "GET_SETTINGS_HWND")
+            return "OK\t" + _settingsChildHwnd.ToInt64();
+
+        if (command.StartsWith("GET_WINDOW_RECTS\t", StringComparison.Ordinal))
+        {
+            var caller = command["GET_WINDOW_RECTS\t".Length..].Trim().ToLowerInvariant();
+            return await Dispatcher.InvokeAsync(() =>
+            {
+                var rects = CollectOpenWindowRects(caller);
+                return "OK\t" + WindowPlacer.SerializeRects(rects);
+            });
+        }
+
+        if (command == "POPUP_CLOSED")
+        {
+            await Dispatcher.InvokeAsync(OnPopupClosed);
             return "OK";
         }
 
@@ -1376,6 +2160,12 @@ public partial class App : System.Windows.Application
         if (command == "OPEN_SETTINGS")
         {
             await Dispatcher.InvokeAsync(OpenSettings);
+            return "OK";
+        }
+
+        if (command == "OPEN_HISTORY")
+        {
+            await Dispatcher.InvokeAsync(OpenHistory);
             return "OK";
         }
 
@@ -1428,6 +2218,8 @@ public partial class App : System.Windows.Application
         var oldUseGpu = _config.UseGpu;
         var oldHotkey = _config.Hotkey;
         var oldOcrHotkey = _config.OcrHotkey;
+        var oldReplaceHotkey = _config.ReplaceHotkey;
+        var oldDoubleCtrlC = _config.DoubleCtrlCEnabled;
 
         _config.CopyFrom(AppConfig.Load());
 
@@ -1437,11 +2229,16 @@ public partial class App : System.Windows.Application
         PopupWindow.AutoClosePauseOnHover = _config.PopupAutoClosePauseOnHover;
         PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
         PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
-        _popup?.ApplyOpacity(_config.PopupOpacity);
+        _popup?.ApplyTheme(_config.Theme, _config.PopupOpacity);
         _popup?.ApplyTtsVisibility(_config.TtsEnabled);
+        _popup?.ApplyHotkeyHints(_config.OcrHotkey, _config.ReplaceHotkey);
+        _popup?.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
+        BroadcastConfigReloadToChildren();
 
         if (!string.Equals(_config.Hotkey, oldHotkey, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(_config.OcrHotkey, oldOcrHotkey, StringComparison.OrdinalIgnoreCase))
+            || !string.Equals(_config.OcrHotkey, oldOcrHotkey, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(_config.ReplaceHotkey, oldReplaceHotkey, StringComparison.OrdinalIgnoreCase)
+            || _config.DoubleCtrlCEnabled != oldDoubleCtrlC)
         {
             RegisterHotkeys();
         }
@@ -1482,6 +2279,159 @@ public partial class App : System.Windows.Application
             }
         }
         catch { }
+    }
+
+    private List<Int32Rect> CollectOpenWindowRects(string excludeKind)
+    {
+        var list = new List<Int32Rect>();
+
+        // 优先放浮窗矩形，作为显示器选择与避让的首选锚点
+        if (excludeKind != "popup")
+        {
+            if (_popup is { IsVisible: true })
+            {
+                var r = WindowPlacer.TryGetRectPx(new WindowInteropHelper(_popup).Handle);
+                if (r.HasValue) list.Add(r.Value);
+            }
+            if (_popupChildHwnd != IntPtr.Zero)
+            {
+                var r = WindowPlacer.TryGetRectPx(_popupChildHwnd);
+                if (r.HasValue) list.Add(r.Value);
+            }
+            if (_inputChildHwnd != IntPtr.Zero)
+            {
+                var r = WindowPlacer.TryGetRectPx(_inputChildHwnd);
+                if (r.HasValue) list.Add(r.Value);
+            }
+        }
+
+        if (excludeKind != "settings")
+        {
+            if (_settingsWin is { IsVisible: true })
+            {
+                var r = WindowPlacer.TryGetRectPx(new WindowInteropHelper(_settingsWin).Handle);
+                if (r.HasValue) list.Add(r.Value);
+            }
+            if (_settingsChildHwnd != IntPtr.Zero)
+            {
+                var r = WindowPlacer.TryGetRectPx(_settingsChildHwnd);
+                if (r.HasValue) list.Add(r.Value);
+            }
+        }
+
+        if (excludeKind != "history" && _historyChildHwnd != IntPtr.Zero)
+        {
+            var r = WindowPlacer.TryGetRectPx(_historyChildHwnd);
+            if (r.HasValue) list.Add(r.Value);
+        }
+
+        return list;
+    }
+
+    /// <summary>向已打开的浮窗和历史窗实时推送主题与透明度预览（无需等下次打开）。</summary>
+    private void BroadcastThemePreviewToWindows(string theme, double opacity)
+    {
+        var op = Math.Clamp(opacity, 0.3, 1.0);
+        _popup?.ApplyTheme(theme, op);
+
+        var wParam = new IntPtr(ThemeManager.ToCode(theme));
+        var lParam = new IntPtr((int)Math.Round(op * 100));
+        if (_popupChildHwnd != IntPtr.Zero) PostMessage(_popupChildHwnd, ThemeManager.WM_QT_REFRESH_THEME, wParam, lParam);
+        if (_inputChildHwnd != IntPtr.Zero) PostMessage(_inputChildHwnd, ThemeManager.WM_QT_REFRESH_THEME, wParam, lParam);
+        if (_historyChildHwnd != IntPtr.Zero) PostMessage(_historyChildHwnd, ThemeManager.WM_QT_REFRESH_THEME, wParam, lParam);
+    }
+
+    /// <summary>通知所有已打开的子进程窗口按最新 config.json 重载主题/透明度/热键提示。</summary>
+    private void BroadcastConfigReloadToChildren()
+    {
+        var reloadFlag = new IntPtr(-1);
+        if (_popupChildHwnd != IntPtr.Zero) PostMessage(_popupChildHwnd, ThemeManager.WM_QT_REFRESH_THEME, reloadFlag, IntPtr.Zero);
+        if (_inputChildHwnd != IntPtr.Zero) PostMessage(_inputChildHwnd, ThemeManager.WM_QT_REFRESH_THEME, reloadFlag, IntPtr.Zero);
+        if (_historyChildHwnd != IntPtr.Zero) PostMessage(_historyChildHwnd, ThemeManager.WM_QT_REFRESH_THEME, reloadFlag, IntPtr.Zero);
+    }
+
+    /// <summary>同步设置页（kind=1）或历史窗（kind=2）句柄到所有已打开的翻译浮窗，统一覆盖与防自动关闭逻辑。</summary>
+    private void NotifyPopupAuxHwnd(int kind, IntPtr hwnd)
+    {
+        if (kind == 1) _popup?.SetSettingsWindow(hwnd);
+        else if (kind == 2) _popup?.SetHistoryWindow(hwnd);
+
+        var kindPtr = new IntPtr(kind);
+        if (_popupChildHwnd != IntPtr.Zero) PostMessage(_popupChildHwnd, ThemeManager.WM_QT_SET_AUX_HWND, kindPtr, hwnd);
+        if (_inputChildHwnd != IntPtr.Zero) PostMessage(_inputChildHwnd, ThemeManager.WM_QT_SET_AUX_HWND, kindPtr, hwnd);
+    }
+
+    /// <summary>打开翻译历史窗口（独立子进程运行，关闭后不留驻内存）。</summary>
+    private void OpenHistory()
+    {
+        if (_historyProc is { HasExited: false })
+        {
+            try { AllowSetForegroundWindow(_historyProc.Id); } catch { }
+            if (_historyChildHwnd != IntPtr.Zero)
+            {
+                NotifyPopupAuxHwnd(2, _historyChildHwnd);
+                ShowWindow(_historyChildHwnd, SW_RESTORE);
+                SetForegroundWindow(_historyChildHwnd);
+            }
+            else
+            {
+                BringProcessWindowToFront(_historyProc);
+            }
+            return;
+        }
+
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            _popup?.BeginOpeningAuxWindow();
+            var win = new HistoryWindow(_config.Theme);
+            WindowPlacer.PlaceAvoiding(win, CollectOpenWindowRects("history"));
+            win.Closed += (_, _) => NotifyPopupAuxHwnd(2, IntPtr.Zero);
+            WindowPlacer.SurfaceWindow(win);
+            var hw = new WindowInteropHelper(win).Handle;
+            if (hw != IntPtr.Zero) NotifyPopupAuxHwnd(2, hw);
+            return;
+        }
+
+        _popup?.BeginOpeningAuxWindow();
+
+        try
+        {
+            var proc = Process.Start(new ProcessStartInfo(exe, "--history-child")
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            if (proc == null)
+            {
+                NotifyPopupAuxHwnd(2, IntPtr.Zero);
+                return;
+            }
+
+            try { AllowSetForegroundWindow(proc.Id); } catch { }
+            _historyProc = proc;
+            _historyChildHwnd = IntPtr.Zero;
+            Log($"OpenHistory: child pid={proc.Id}");
+
+            _ = proc.WaitForExitAsync().ContinueWith(_ =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (ReferenceEquals(_historyProc, proc))
+                    {
+                        _historyProc = null;
+                        _historyChildHwnd = IntPtr.Zero;
+                    }
+                    try { proc.Dispose(); } catch { }
+                    NotifyPopupAuxHwnd(2, IntPtr.Zero);
+                }));
+            });
+        }
+        catch (Exception ex)
+        {
+            Log("open history child failed: " + ex.Message);
+            NotifyPopupAuxHwnd(2, IntPtr.Zero);
+        }
     }
 
     /// <summary>打开组件管理窗口（独立子进程运行，关闭后不留驻内存）。</summary>
@@ -1543,8 +2493,10 @@ public partial class App : System.Windows.Application
         if (_settingsProc is { HasExited: false })
         {
             Log("OpenSettings: child already open, activate");
+            try { AllowSetForegroundWindow(_settingsProc.Id); } catch { }
             if (_settingsChildHwnd != IntPtr.Zero)
             {
+                NotifyPopupAuxHwnd(1, _settingsChildHwnd);
                 ShowWindow(_settingsChildHwnd, SW_RESTORE);
                 SetForegroundWindow(_settingsChildHwnd);
             }
@@ -1562,9 +2514,7 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        var popupTopmost = _popup?.Topmost ?? false;
-        if (_popup != null) _popup.Topmost = false;
-        _popup?.SlowStreaming();
+        _popup?.BeginOpeningAuxWindow();
 
         try
         {
@@ -1575,11 +2525,11 @@ public partial class App : System.Windows.Application
             });
             if (proc == null)
             {
-                if (_popup != null) _popup.Topmost = popupTopmost;
-                _popup?.ResumeStreaming();
+                NotifyPopupAuxHwnd(1, IntPtr.Zero);
                 return;
             }
 
+            try { AllowSetForegroundWindow(proc.Id); } catch { }
             _settingsProc = proc;
             _settingsChildHwnd = IntPtr.Zero;
             Log($"OpenSettings: child pid={proc.Id}");
@@ -1595,9 +2545,7 @@ public partial class App : System.Windows.Application
                     }
                     try { proc.Dispose(); } catch { }
 
-                    if (_popup != null) _popup.Topmost = popupTopmost;
-                    _popup?.ResumeStreaming();
-                    _popup?.SetSettingsWindow(IntPtr.Zero);
+                    NotifyPopupAuxHwnd(1, IntPtr.Zero);
                     ApplyReloadedConfig();
                 }));
             });
@@ -1605,8 +2553,7 @@ public partial class App : System.Windows.Application
         catch (Exception ex)
         {
             Log("OpenSettings child failed, fallback in-process: " + ex.Message);
-            if (_popup != null) _popup.Topmost = popupTopmost;
-            _popup?.ResumeStreaming();
+            NotifyPopupAuxHwnd(1, IntPtr.Zero);
             OpenSettingsInProcessFallback();
         }
     }
@@ -1619,31 +2566,26 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        var popupTopmost = _popup?.Topmost ?? false;
-        if (_popup != null) _popup.Topmost = false;
-        _popup?.SlowStreaming();
+        _popup?.BeginOpeningAuxWindow();
 
         var win = new SettingsWindow(_config, _engine!)
         {
             Owner = null,
-            WindowStartupLocation = WindowStartupLocation.CenterScreen,
-            Topmost = true,
         };
+        WindowPlacer.PlaceAvoiding(win, CollectOpenWindowRects("settings"));
+        win.ThemePreviewRequested += BroadcastThemePreviewToWindows;
         _settingsWin = win;
 
         win.Closed += (_, _) =>
         {
             _settingsWin = null;
-            win.Topmost = false;
-            if (_popup != null) _popup.Topmost = popupTopmost;
-            _popup?.ResumeStreaming();
-            _popup?.SetSettingsWindow(IntPtr.Zero);
+            NotifyPopupAuxHwnd(1, IntPtr.Zero);
             ApplyReloadedConfig();
         };
 
-        win.Show();
+        WindowPlacer.SurfaceWindow(win);
         var settingsHwnd = new WindowInteropHelper(win).Handle;
-        _popup?.SetSettingsWindow(settingsHwnd);
+        NotifyPopupAuxHwnd(1, settingsHwnd);
     }
 
     /// <summary>朗读结束（播放完或手动停止），恢复喇叭按钮状态。</summary>
@@ -1671,14 +2613,22 @@ public partial class App : System.Windows.Application
         try { if (_inputProc is { HasExited: false }) _inputProc.Kill(); } catch { }
         try { _inputProc?.Dispose(); } catch { }
         _inputProc = null;
+        try { if (_popupProc is { HasExited: false }) _popupProc.Kill(); } catch { }
+        try { _popupProc?.Dispose(); } catch { }
+        _popupProc = null;
         try { if (_componentProc is { HasExited: false }) _componentProc.Kill(); } catch { }
         try { _componentProc?.Dispose(); } catch { }
         _componentProc = null;
+        try { if (_historyProc is { HasExited: false }) _historyProc.Kill(); } catch { }
+        try { _historyProc?.Dispose(); } catch { }
+        _historyProc = null;
         try { _speech?.Stop(); } catch { }
         try { _speech?.Dispose(); } catch { }
         _engine?.Dispose();
         _hotkey?.Dispose();
         _ocrHotkey?.Dispose();
+        _replaceHotkey?.Dispose();
+        _clipboardWatcher?.Dispose();
     }
 
     private void ExitApp()

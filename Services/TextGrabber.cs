@@ -12,9 +12,27 @@ namespace QuickTrans.Services;
 /// </summary>
 public static class TextGrabber
 {
+    private const byte VK_SHIFT = 0x10;
     private const byte VK_CONTROL = 0x11;
+    private const byte VK_MENU = 0x12;
+    private const byte VK_LSHIFT = 0xA0;
+    private const byte VK_RSHIFT = 0xA1;
+    private const byte VK_LMENU = 0xA4;
+    private const byte VK_RMENU = 0xA5;
+    private const byte VK_LWIN = 0x5B;
+    private const byte VK_RWIN = 0x5C;
     private const byte VK_C = 0x43;
+    private const byte VK_V = 0x56;
     private const uint KEYEVENTF_KEYUP = 0x0002;
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     private static extern uint GetClipboardSequenceNumber();
@@ -51,6 +69,12 @@ public static class TextGrabber
 
     [DllImport("user32.dll")]
     private static extern uint EnumClipboardFormats(uint format);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint RegisterClipboardFormat(string lpszFormat);
+
+    private static readonly uint CfExcludeMonitor = RegisterClipboardFormat("ExcludeClipboardContentFromMonitorProcessing");
+    private static readonly uint CfCanIncludeHistory = RegisterClipboardFormat("CanIncludeInClipboardHistory");
 
     /// <summary>剪贴板里当前有多少种数据格式，用于判断"有内容但读不出"的情况。</summary>
     private static int CountClipboardFormats()
@@ -260,6 +284,7 @@ public static class TextGrabber
 
         try
         {
+            ClipboardWatcher.SuppressFor(900);
             var before = GetClipboardSequenceNumber();
             SendCtrlC();
 
@@ -295,6 +320,7 @@ public static class TextGrabber
         {
             if (needRestore)
             {
+                ClipboardWatcher.SuppressFor(700);
                 RestoreClipboard(backup);
                 App.Log($"  clip: restored at {total.ElapsedMilliseconds}ms");
             }
@@ -313,8 +339,38 @@ public static class TextGrabber
         return false;
     }
 
+    /// <summary>
+    /// 模拟 Ctrl+C / Ctrl+V 前先确保 Alt / Shift / Win 已松开。
+    /// 否则用户在按下 Alt+T / Alt+R 时手指还没抬起 Alt，模拟 Ctrl+C 就会变成 Ctrl+Alt+C，
+    /// 不仅目标窗口（如微信输入框）不认复制，还会误触发系统里绑定了 Ctrl+Alt+C 的其他快捷键！
+    /// </summary>
+    private static void ReleaseInterferingModifiers()
+    {
+        static bool IsDown(byte vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
+        static bool AnyInterferingDown() =>
+            IsDown(VK_MENU) || IsDown(VK_LMENU) || IsDown(VK_RMENU)
+            || IsDown(VK_SHIFT) || IsDown(VK_LSHIFT) || IsDown(VK_RSHIFT)
+            || IsDown(VK_LWIN) || IsDown(VK_RWIN);
+
+        if (!AnyInterferingDown()) return;
+
+        // 先等用户手指自然抬起（通常 40–120ms），避免合成 Alt-Up 误触菜单栏
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 180 && AnyInterferingDown())
+            Thread.Sleep(10);
+
+        // 若用户仍按住不放，强制抬起干扰修饰键后再发 Ctrl+C/V
+        foreach (var vk in new[] { VK_LMENU, VK_RMENU, VK_MENU, VK_LSHIFT, VK_RSHIFT, VK_SHIFT, VK_LWIN, VK_RWIN })
+        {
+            if (IsDown(vk))
+                keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        }
+        Thread.Sleep(10);
+    }
+
     private static void SendCtrlC()
     {
+        ReleaseInterferingModifiers();
         keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
         Thread.Sleep(8);
         keybd_event(VK_C, 0, 0, UIntPtr.Zero);
@@ -435,6 +491,151 @@ public static class TextGrabber
         }
     }
 
+    /// <summary>公开只读剪贴板文本方法，供剪贴板双击监听复用。</summary>
+    public static string? TryReadClipboardText() => FastClipboardText();
+
+    /// <summary>
+    /// 把译文粘贴替换到指定来源窗口（保留并还原用户原有的剪贴板内容）。
+    /// 如果来源窗口已关闭则返回 false。
+    /// </summary>
+    public static bool PasteToWindow(IntPtr targetHwnd, string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        if (targetHwnd == IntPtr.Zero || !IsWindow(targetHwnd)) return false;
+        if (IsConsoleWindow(targetHwnd)) return false;
+
+        var backup = BackupClipboard();
+        if (!backup.HasAnything && CountClipboardFormats() > 0)
+        {
+            // 剪贴板有无法备份的特殊格式时仍允许用户明确点击的替换，但不破坏后续逻辑
+        }
+
+        try
+        {
+            ClipboardWatcher.SuppressFor(1200);
+            if (!SetClipboardTextFast(text)) return false;
+
+            if (GetForegroundWindow() != targetHwnd)
+            {
+                SetForegroundWindow(targetHwnd);
+                Thread.Sleep(60);
+            }
+
+            // 模拟 Ctrl+V 替换当前选区（先清理仍被按住的 Alt/Shift/Win，避免变成 Ctrl+Alt+V）
+            ReleaseInterferingModifiers();
+            keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(10);
+            keybd_event(VK_V, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(10);
+            keybd_event(VK_V, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            Thread.Sleep(10);
+            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+            // 等目标应用读完剪贴板再还原原内容
+            Thread.Sleep(140);
+            return true;
+        }
+        finally
+        {
+            if (backup.HasAnything)
+            {
+                ClipboardWatcher.SuppressFor(700);
+                RestoreClipboard(backup);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 智能合并 PDF / 论文 / 截图中的多余单行换行：
+    /// - 保留空行分段（\n\n）、句末标点后的换行、列表/标题项前的换行；
+    /// - 英文连字符断词（trans-\nlation）无缝拼回；
+    /// - 中文单行断行无缝拼回，英文单行断行用空格拼回。
+    /// </summary>
+    public static string CleanLineBreaks(string text)
+    {
+        if (string.IsNullOrEmpty(text) || (!text.Contains('\n') && !text.Contains('\r')))
+            return text;
+
+        var normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        var lines = normalized.Split('\n');
+        if (lines.Length <= 1) return normalized;
+
+        var sb = new StringBuilder(normalized.Length);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var cur = lines[i].TrimEnd();
+            if (i == 0)
+            {
+                sb.Append(cur);
+                continue;
+            }
+
+            var prev = lines[i - 1].TrimEnd();
+            var nextTrim = cur.TrimStart();
+
+            // 空行保留分段
+            if (prev.Length == 0 || nextTrim.Length == 0)
+            {
+                sb.Append('\n').Append(cur);
+                continue;
+            }
+
+            // 上一行以句末/分隔标点结尾，或下一行像列表/标题项 → 保留原换行
+            if (EndsWithHardBreakPunct(prev) || StartsLikeListOrHeading(nextTrim))
+            {
+                sb.Append('\n').Append(cur);
+                continue;
+            }
+
+            // 英文连字符断词：如 "trans-\nlation" -> "translation"
+            if (prev.Length >= 2 && prev[^1] == '-' && char.IsLetter(prev[^2]) && char.IsLower(nextTrim[0]))
+            {
+                sb.Length--; // 去掉行尾 '-'
+                sb.Append(nextTrim);
+                continue;
+            }
+
+            // 中日韩字符间直接拼接不加空格；其它情况加一个空格
+            if (IsCjk(prev[^1]) && IsCjk(nextTrim[0]))
+                sb.Append(nextTrim);
+            else
+                sb.Append(' ').Append(nextTrim);
+        }
+
+        return sb.ToString();
+    }
+
+    private static bool EndsWithHardBreakPunct(string line)
+    {
+        var last = line[^1];
+        return last is '.' or '!' or '?' or ':' or ';'
+            or '。' or '！' or '？' or '：' or '；' or '…';
+    }
+
+    private static bool StartsLikeListOrHeading(string trimmed)
+    {
+        if (trimmed.StartsWith("- ", StringComparison.Ordinal)
+            || trimmed.StartsWith("* ", StringComparison.Ordinal)
+            || trimmed.StartsWith("• ", StringComparison.Ordinal)
+            || trimmed.StartsWith("· ", StringComparison.Ordinal)
+            || trimmed.StartsWith("#", StringComparison.Ordinal))
+            return true;
+
+        // 类似 "1. " / "1) " / "(1)" / "（1）"
+        var idx = 0;
+        while (idx < trimmed.Length && char.IsDigit(trimmed[idx])) idx++;
+        if (idx > 0 && idx < trimmed.Length && trimmed[idx] is '.' or ')' or '、' or '）')
+            return true;
+
+        if ((trimmed[0] == '(' || trimmed[0] == '（') && trimmed.Length >= 3 && char.IsDigit(trimmed[1]))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsCjk(char c) =>
+        (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3040 && c <= 0x30FF) || (c >= 0xAC00 && c <= 0xD7AF);
+
     private static bool SetClipboardTextFast(string text)
     {
         try
@@ -473,6 +674,10 @@ public static class TextGrabber
                     return false;
                 }
 
+                // 标记为临时内部写入，通知 Windows 剪贴板历史及遵循该约定的剪贴板工具跳过记录
+                SetClipboardDwordFlag(CfExcludeMonitor, 0);
+                SetClipboardDwordFlag(CfCanIncludeHistory, 0);
+
                 return true;
             }
             finally
@@ -484,5 +689,17 @@ public static class TextGrabber
         {
             return false;
         }
+    }
+
+    private static void SetClipboardDwordFlag(uint format, int value)
+    {
+        if (format == 0) return;
+        var h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)4);
+        if (h == IntPtr.Zero) return;
+        var p = GlobalLock(h);
+        if (p == IntPtr.Zero) { GlobalFree(h); return; }
+        try { Marshal.WriteInt32(p, value); }
+        finally { GlobalUnlock(h); }
+        if (SetClipboardData(format, h) == IntPtr.Zero) GlobalFree(h);
     }
 }
