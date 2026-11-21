@@ -1,6 +1,6 @@
 # QuickTrans
 
-Windows 轻量桌面划词翻译工具（.NET 8 + WPF + llama.cpp Vulkan），支持本地离线大模型与在线接口，极低待机内存（约 15–18 MB）。
+Windows 轻量桌面划词翻译工具（.NET 8 + WPF + llama.cpp Vulkan），支持本地离线大模型与在线接口，极低待机内存（约 15–18 MB）。自己不会编程，纯AI做的，用上世界前列的gemini 4 neon性能突飞猛进。
 
 ## 主要功能
 
