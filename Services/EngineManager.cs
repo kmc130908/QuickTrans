@@ -6,8 +6,13 @@ using System.Text;
 
 namespace QuickTrans.Services;
 
-/// <summary>models 目录里的一个 GGUF 模型。</summary>
-public sealed record ModelInfo(string FilePath, string DisplayName, long SizeBytes, string Quant)
+/// <summary>models 目录或用户手动添加的外部路径里的一个 GGUF 模型。</summary>
+public sealed record ModelInfo(
+    string FilePath,
+    string DisplayName,
+    long SizeBytes,
+    string Quant,
+    bool IsCustomPath = false)
 {
     public string SizeText => SizeBytes >= 1024L * 1024 * 1024
         ? $"{SizeBytes / 1024.0 / 1024 / 1024:F2} GB"
@@ -45,13 +50,36 @@ public sealed class EngineManager : IDisposable
     /// <summary>最后一次被使用的时间，供闲置卸载策略判断。</summary>
     public DateTime? LastUsedAt { get; private set; }
 
+    // 正在翻译的“租约”：当前时间还没超过这个时间点，就认为引擎在忙，闲置卸载不动它。
+    // 用时间戳而不是计数器，是为了子进程被强杀、没来得及发结束通知时也能自动过期，
+    // 不会把闲置卸载永久卡死。
+    private long _busyUntilTick;
+
     /// <summary>标记一次使用（加载成功或完成翻译）。</summary>
     public void MarkUsed() => LastUsedAt = DateTime.Now;
 
-    /// <summary>闲置时长，未加载时返回 null。</summary>
-    public TimeSpan? IdleFor => IsRunning && !_loading && LastUsedAt.HasValue
-        ? DateTime.Now - LastUsedAt.Value
-        : null;
+    /// <summary>开始一段翻译：在租约到期前禁止闲置卸载。</summary>
+    public void BeginTranslateLease(int seconds = 900)
+    {
+        var until = Environment.TickCount64 + Math.Max(10, seconds) * 1000L;
+        var prev = Volatile.Read(ref _busyUntilTick);
+        if (until > prev) Volatile.Write(ref _busyUntilTick, until);
+        MarkUsed();
+    }
+
+    /// <summary>本轮翻译结束，解除忙碌租约。</summary>
+    public void EndTranslateLease() => Volatile.Write(ref _busyUntilTick, 0);
+
+    /// <summary>闲置时长，未加载或正在翻译时返回 null。</summary>
+    public TimeSpan? IdleFor
+    {
+        get
+        {
+            if (!IsRunning || _loading || !LastUsedAt.HasValue) return null;
+            if (Environment.TickCount64 < Volatile.Read(ref _busyUntilTick)) return null;
+            return DateTime.Now - LastUsedAt.Value;
+        }
+    }
     public int Port => _port;
     public string BaseUrl => $"http://127.0.0.1:{_port}";
     public string LogText => _log.ToString();
@@ -105,25 +133,129 @@ public sealed class EngineManager : IDisposable
         return true;
     }
 
-    /// <summary>扫描 models 目录。任何 .gguf 文件都会被列出来，方便用户自己扩充。</summary>
-    public List<ModelInfo> ScanModels()
+    /// <summary>扫描 models 目录并合并用户手动添加的外部 .gguf 路径，方便自由管理电脑任意位置的模型。</summary>
+    public List<ModelInfo> ScanModels(IEnumerable<string>? extraPaths = null)
     {
         var list = new List<ModelInfo>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         try
         {
-            if (!Directory.Exists(ModelsDir)) return list;
-            foreach (var f in Directory.GetFiles(ModelsDir, "*.gguf", SearchOption.TopDirectoryOnly))
+            if (Directory.Exists(ModelsDir))
             {
-                try
+                foreach (var f in Directory.GetFiles(ModelsDir, "*.gguf", SearchOption.TopDirectoryOnly))
                 {
-                    var fi = new FileInfo(f);
-                    list.Add(new ModelInfo(f, Path.GetFileNameWithoutExtension(fi.Name), fi.Length, GuessQuant(fi.Name)));
+                    try
+                    {
+                        var full = Path.GetFullPath(f);
+                        if (!seen.Add(full)) continue;
+                        var fi = new FileInfo(full);
+                        list.Add(new ModelInfo(full, Path.GetFileNameWithoutExtension(fi.Name), fi.Length, GuessQuant(fi.Name), IsCustomPath: false));
+                    }
+                    catch { /* 单个文件读不到就跳过 */ }
                 }
-                catch { /* 单个文件读不到就跳过 */ }
             }
         }
         catch { /* 目录不可访问 */ }
+
+        if (extraPaths != null)
+        {
+            foreach (var raw in extraPaths)
+            {
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(raw)) continue;
+                    var full = Path.GetFullPath(raw.Trim());
+                    if (!full.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!File.Exists(full)) continue;
+                    if (!seen.Add(full)) continue;
+                    var fi = new FileInfo(full);
+                    list.Add(new ModelInfo(full, Path.GetFileNameWithoutExtension(fi.Name), fi.Length, GuessQuant(fi.Name), IsCustomPath: true));
+                }
+                catch { }
+            }
+        }
+
         return list.OrderByDescending(m => m.SizeBytes).ToList();
+    }
+
+    /// <summary>
+    /// 按需扫描本机常见本地大模型目录（LM Studio / GPT4All / Jan / llama.cpp / ModelScope / HuggingFace / 下载目录）中的有效 .gguf 文件。
+    /// 纯按需执行，零后台轮询与常驻占用。
+    /// </summary>
+    public static List<string> DiscoverCommonModels(string excludeModelsDir, IEnumerable<string>? existingPaths = null)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+        var roots = new (string Dir, int MaxDepth)[]
+        {
+            (Path.Combine(home, ".lmstudio", "models"), 4),
+            (Path.Combine(home, ".cache", "lm-studio", "models"), 4),
+            (Path.Combine(localApp, "nomic.ai", "GPT4All"), 2),
+            (Path.Combine(home, "jan", "models"), 3),
+            (Path.Combine(localApp, "llama.cpp"), 2),
+            (Path.Combine(home, ".cache", "modelscope", "hub"), 4),
+            (Path.Combine(home, ".cache", "huggingface", "hub"), 4),
+            (Path.Combine(home, "Downloads"), 1),
+        };
+
+        var excludePrefix = "";
+        try { excludePrefix = Path.GetFullPath(excludeModelsDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar; }
+        catch { }
+
+        var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (existingPaths != null)
+        {
+            foreach (var p in existingPaths)
+            {
+                try { if (!string.IsNullOrWhiteSpace(p)) known.Add(Path.GetFullPath(p)); } catch { }
+            }
+        }
+
+        var found = new List<string>();
+        void ScanDir(string dir, int depth)
+        {
+            if (depth < 0 || !Directory.Exists(dir)) return;
+            try
+            {
+                foreach (var f in Directory.EnumerateFiles(dir, "*.gguf", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        var full = Path.GetFullPath(f);
+                        if (!string.IsNullOrEmpty(excludePrefix) && full.StartsWith(excludePrefix, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (!known.Add(full)) continue;
+                        if (ValidateGgufHeader(full).Ok)
+                            found.Add(full);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            if (depth == 0) return;
+            try
+            {
+                foreach (var sub in Directory.EnumerateDirectories(dir))
+                {
+                    try
+                    {
+                        var attr = File.GetAttributes(sub);
+                        if ((attr & FileAttributes.ReparsePoint) != 0) continue; // 跳过符号链接避免死循环
+                        ScanDir(sub, depth - 1);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        foreach (var (dir, depth) in roots)
+            ScanDir(dir, depth);
+
+        return found;
     }
 
     private static string GuessQuant(string fileName)

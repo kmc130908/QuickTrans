@@ -27,14 +27,79 @@ public sealed class ComponentManager
     public string EngineDir => Path.Combine(_baseDir, "engine");
     public string EngineCpuDir => Path.Combine(_baseDir, "engine-cpu");
 
-    /// <summary>组件是否已经装好（靠 CheckFile 判断）。</summary>
-    public bool IsInstalled(ComponentItem item)
+    /// <summary>
+    /// 查找组件对应的已安装文件路径。
+    /// 对于模型：先按精确 CheckFile 查 models 目录，再按同系列前缀匹配 models 目录里的任意量化 .gguf（如 Q4_K_M / Q8_0）以及用户手动添加的外部模型路径。
+    /// </summary>
+    public string? FindInstalledFile(ComponentItem item, IEnumerable<string>? extraModelPaths = null)
     {
-        if (string.IsNullOrWhiteSpace(item.CheckFile)) return false;
+        if (string.IsNullOrWhiteSpace(item.CheckFile)) return null;
         var target = Path.Combine(_baseDir, item.Target);
-        return item.ArchiveKind == "zip"
-            ? File.Exists(Path.Combine(target, item.CheckFile))
-            : File.Exists(Path.Combine(target, item.CheckFile));
+        var exact = Path.Combine(target, item.CheckFile);
+        if (File.Exists(exact)) return exact;
+
+        if (!string.Equals(item.Kind, "model", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        bool Matches(string fileName)
+        {
+            if (string.Equals(fileName, item.CheckFile, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (item.MatchPrefixes is { Length: > 0 })
+            {
+                foreach (var p in item.MatchPrefixes)
+                {
+                    if (!string.IsNullOrWhiteSpace(p)
+                        && fileName.Contains(p, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        try
+        {
+            if (Directory.Exists(target))
+            {
+                foreach (var f in Directory.GetFiles(target, "*.gguf", SearchOption.TopDirectoryOnly))
+                {
+                    if (Matches(Path.GetFileName(f)))
+                        return f;
+                }
+            }
+        }
+        catch { }
+
+        if (extraModelPaths != null)
+        {
+            foreach (var p in extraModelPaths)
+            {
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(p) && File.Exists(p) && Matches(Path.GetFileName(p)))
+                        return p;
+                }
+                catch { }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>组件是否已经装好（支持自动识别 models 目录同系列量化模型与外部路径）。</summary>
+    public bool IsInstalled(ComponentItem item, IEnumerable<string>? extraModelPaths = null) =>
+        FindInstalledFile(item, extraModelPaths) != null;
+
+    /// <summary>判断给定路径是否位于安装目录的 models 文件夹内（删除操作仅允许删 models 内部文件，绝不误删用户外部文件）。</summary>
+    public bool IsInsideModelsDir(string filePath)
+    {
+        try
+        {
+            var full = Path.GetFullPath(filePath);
+            var dir = Path.GetFullPath(ModelsDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return full.StartsWith(dir, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
     }
 
     /// <summary>下载并安装组件。镜像失败会自动回落主地址。</summary>
@@ -66,7 +131,7 @@ public sealed class ComponentManager
         {
             try
             {
-                await DownloadWithResumeAsync(url, temp, item.SizeBytes, progress, ct);
+                await DownloadBestAsync(url, temp, item.SizeBytes, progress, ct);
                 lastError = null;
                 break;
             }
@@ -83,6 +148,8 @@ public sealed class ComponentManager
 
         if (lastError != null)
             throw new InvalidOperationException("下载失败：" + lastError.Message, lastError);
+
+        try { if (File.Exists(temp + ".chunks")) File.Delete(temp + ".chunks"); } catch { }
 
         // 校验：官方清单带 SHA256 时做强校验；模型文件额外检查 GGUF 文件头，防止镜像返回 HTML 错误页
         if (!string.IsNullOrWhiteSpace(item.Sha256))
@@ -126,6 +193,215 @@ public sealed class ComponentManager
         }
 
         progress?.Report(new DownloadProgress(1, 1, "完成"));
+    }
+
+    private const int ParallelChunks = 4;
+    private const long ParallelThresholdBytes = 8L * 1024 * 1024;
+
+    /// <summary>
+    /// 优先探测服务器是否支持 HTTP Range 并发下载：支持且文件 ≥ 8MB 时使用 4 线程分片下载（提速 2–4 倍，支持断点续传）；
+    /// 不支持时平滑回落单线程断点续传。
+    /// </summary>
+    private async Task DownloadBestAsync(
+        string url, string tempPath, long expectedSize,
+        IProgress<DownloadProgress>? progress, CancellationToken ct)
+    {
+        var metaPath = tempPath + ".chunks";
+
+        // 如果上次遗留了单线程 .part（没有 .chunks 元数据），继续单线程续传避免浪费已下流量
+        var hasLegacySinglePart = File.Exists(tempPath) && !File.Exists(metaPath) && new FileInfo(tempPath).Length > 0;
+        if (!hasLegacySinglePart)
+        {
+            var (supportsRange, remoteTotal) = await ProbeRangeSupportAsync(url, ct);
+            if (supportsRange && remoteTotal >= ParallelThresholdBytes)
+            {
+                await DownloadParallelAsync(url, tempPath, metaPath, remoteTotal, progress, ct);
+                return;
+            }
+        }
+
+        await DownloadWithResumeAsync(url, tempPath, expectedSize, progress, ct);
+    }
+
+    private async Task<(bool SupportsRange, long TotalBytes)> ProbeRangeSupportAsync(string url, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.PartialContent
+                && resp.Content.Headers.ContentRange?.Length is long total
+                && total > 0)
+            {
+                return (true, total);
+            }
+            return (false, resp.Content.Headers.ContentLength ?? 0);
+        }
+        catch
+        {
+            return (false, 0);
+        }
+    }
+
+    private async Task DownloadParallelAsync(
+        string url, string tempPath, string metaPath, long totalBytes,
+        IProgress<DownloadProgress>? progress, CancellationToken ct)
+    {
+        var chunkCount = ParallelChunks;
+        var chunkSize = totalBytes / chunkCount;
+        var starts = new long[chunkCount];
+        var ends = new long[chunkCount];
+        var done = new long[chunkCount];
+
+        for (var i = 0; i < chunkCount; i++)
+        {
+            starts[i] = i * chunkSize;
+            ends[i] = i == chunkCount - 1 ? totalBytes - 1 : (i + 1) * chunkSize - 1;
+        }
+
+        // 尝试加载上次多线程断点进度
+        var resumed = false;
+        if (File.Exists(tempPath) && File.Exists(metaPath) && new FileInfo(tempPath).Length == totalBytes)
+        {
+            try
+            {
+                var lines = File.ReadAllLines(metaPath);
+                if (lines.Length == chunkCount + 1
+                    && long.TryParse(lines[0], out var savedTotal)
+                    && savedTotal == totalBytes)
+                {
+                    var valid = true;
+                    for (var i = 0; i < chunkCount; i++)
+                    {
+                        var maxLen = ends[i] - starts[i] + 1;
+                        if (long.TryParse(lines[i + 1], out var d) && d >= 0 && d <= maxLen)
+                            done[i] = d;
+                        else { valid = false; break; }
+                    }
+                    resumed = valid;
+                }
+            }
+            catch { resumed = false; }
+        }
+
+        if (!resumed)
+        {
+            Array.Clear(done, 0, chunkCount);
+            await using (var initFs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+            {
+                initFs.SetLength(totalBytes);
+            }
+        }
+
+        long totalReceived = done.Sum();
+        var metaGate = new object();
+        var lastReportTicks = 0L;
+        var lastMetaTicks = 0L;
+
+        void PersistMeta()
+        {
+            lock (metaGate)
+            {
+                try
+                {
+                    var lines = new string[chunkCount + 1];
+                    lines[0] = totalBytes.ToString();
+                    for (var i = 0; i < chunkCount; i++)
+                        lines[i + 1] = Volatile.Read(ref done[i]).ToString();
+                    File.WriteAllLines(metaPath, lines);
+                }
+                catch { }
+            }
+        }
+
+        void ReportNow(bool force = false)
+        {
+            var now = Environment.TickCount64;
+            if (!force && now - Volatile.Read(ref lastReportTicks) < 120) return;
+            Volatile.Write(ref lastReportTicks, now);
+            progress?.Report(new DownloadProgress(Interlocked.Read(ref totalReceived), totalBytes, $"多线程下载中 ({chunkCount}x)"));
+
+            if (force || now - Volatile.Read(ref lastMetaTicks) >= 600)
+            {
+                Volatile.Write(ref lastMetaTicks, now);
+                PersistMeta();
+            }
+        }
+
+        ReportNow(force: true);
+
+        async Task DownloadChunkAsync(int idx)
+        {
+            var chunkLen = ends[idx] - starts[idx] + 1;
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var curDone = Volatile.Read(ref done[idx]);
+                if (curDone >= chunkLen) return;
+
+                try
+                {
+                    var rangeStart = starts[idx] + curDone;
+                    var rangeEnd = ends[idx];
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(rangeStart, rangeEnd);
+                    using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                    if (resp.StatusCode != System.Net.HttpStatusCode.PartialContent)
+                        throw new IOException($"分片请求未返回 206（状态码 {(int)resp.StatusCode}）");
+
+                    await using var netStream = await resp.Content.ReadAsStreamAsync(ct);
+                    await using var fs = new FileStream(tempPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite,
+                        bufferSize: 81920, useAsync: true);
+                    fs.Seek(rangeStart, SeekOrigin.Begin);
+
+                    var buf = new byte[81920];
+                    while (true)
+                    {
+                        var remaining = chunkLen - Volatile.Read(ref done[idx]);
+                        if (remaining <= 0) break;
+                        var toRead = (int)Math.Min(buf.Length, remaining);
+                        var n = await netStream.ReadAsync(buf.AsMemory(0, toRead), ct);
+                        if (n <= 0) break;
+
+                        await fs.WriteAsync(buf.AsMemory(0, n), ct);
+                        Interlocked.Add(ref done[idx], n);
+                        Interlocked.Add(ref totalReceived, n);
+                        ReportNow();
+                    }
+
+                    if (Volatile.Read(ref done[idx]) >= chunkLen)
+                        return;
+
+                    throw new IOException($"分片 {idx + 1} 连接提前中断");
+                }
+                catch (OperationCanceledException)
+                {
+                    PersistMeta();
+                    throw;
+                }
+                catch
+                {
+                    PersistMeta();
+                    if (attempt >= 2) throw;
+                    await Task.Delay(500 * (attempt + 1), ct);
+                }
+            }
+        }
+
+        try
+        {
+            var tasks = Enumerable.Range(0, chunkCount).Select(DownloadChunkAsync).ToArray();
+            await Task.WhenAll(tasks);
+        }
+        finally
+        {
+            PersistMeta();
+        }
+
+        var finalReceived = Interlocked.Read(ref totalReceived);
+        progress?.Report(new DownloadProgress(finalReceived, totalBytes, "下载完成"));
+        if (finalReceived < totalBytes)
+            throw new IOException($"下载不完整（{finalReceived}/{totalBytes} 字节），请重试续传");
     }
 
     private async Task DownloadWithResumeAsync(
@@ -222,7 +498,7 @@ public sealed class ComponentManager
             File.Copy(file, file.Replace(source, dest), overwrite: true);
     }
 
-    /// <summary>删除组件文件。模型删单个文件，引擎删整个目录。</summary>
+    /// <summary>删除组件文件。模型仅删除 models 目录内匹配到的文件，引擎删整个目录。</summary>
     public void Remove(ComponentItem item)
     {
         var target = Path.Combine(_baseDir, item.Target);
@@ -233,7 +509,8 @@ public sealed class ComponentManager
             return;
         }
 
-        var file = Path.Combine(target, item.CheckFile);
-        if (File.Exists(file)) File.Delete(file);
+        var matched = FindInstalledFile(item);
+        if (matched != null && IsInsideModelsDir(matched) && File.Exists(matched))
+            File.Delete(matched);
     }
 }

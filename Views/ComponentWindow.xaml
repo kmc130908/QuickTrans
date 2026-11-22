@@ -1,10 +1,10 @@
 <Window x:Class="QuickTrans.Views.ComponentWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="组件管理" Width="620" Height="620"
+        Title="模型下载与管理" Width="620" Height="560"
         WindowStartupLocation="CenterScreen"
         Background="#F5F5F7"
-        FontFamily="Microsoft YaHei UI"
+        FontFamily="{StaticResource UiFont}"
         TextOptions.TextFormattingMode="Display"
         UseLayoutRounding="True">
     <Grid Margin="0">
@@ -15,21 +15,21 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="24,22,24,0">
-            <TextBlock Text="组件管理" FontSize="19" FontWeight="SemiBold" Foreground="#1A1A1E" />
+            <TextBlock x:Name="TitleText" Text="模型下载与管理" FontSize="19" FontWeight="SemiBold" Foreground="#1A1A1E" />
             <TextBlock x:Name="HintText" FontSize="12.5" Foreground="#6B6B75"
                        Margin="0,8,0,0" TextWrapping="Wrap"
-                       Text="GPU 引擎和模型体积较大，安装包默认只带 CPU 引擎。下面是可选组件，按需下载。" />
+                       Text="已内置 Vulkan 通用 GPU+CPU 引擎，无需额外下载引擎。可在下方一键下载本地翻译模型，已有模型放进 models 文件夹也会自动识别。" />
         </StackPanel>
 
         <ScrollViewer Grid.Row="1" Margin="24,16,24,0" VerticalScrollBarVisibility="Auto">
             <StackPanel x:Name="ListPanel" />
         </ScrollViewer>
 
-        <Border Grid.Row="2" Background="#F5F5F7" Padding="24,14">
+        <Border x:Name="FooterBorder" Grid.Row="2" Background="#F5F5F7" Padding="24,14">
             <Grid>
                 <TextBlock x:Name="StatusText" FontSize="12" Foreground="#6B6B75"
                            VerticalAlignment="Center" Text="" TextWrapping="Wrap" />
-                <Button Content="关闭" HorizontalAlignment="Right" Padding="20,6"
+                <Button x:Name="CloseBtn" Content="关闭" HorizontalAlignment="Right" Padding="20,6"
                         FontSize="12.5" Cursor="Hand" Click="OnCloseClick"
                         Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
             </Grid>

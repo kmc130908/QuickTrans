@@ -139,6 +139,86 @@ public static class TranslationService
                text;
     }
 
+    /// <summary>sakura-1.5B 训练时使用的官方系统提示，缺了它容易出元话语和重复。</summary>
+    private const string SakuraSystemPrompt =
+        "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，" +
+        "并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。";
+
+    /// <summary>当前是不是一次真正的翻译请求（词典模式仍然走通用提示）。</summary>
+    private static bool IsTranslateRequest(string mode, bool allowWordDict, string text) =>
+        string.Equals(mode, "translate", StringComparison.OrdinalIgnoreCase)
+        && !(allowWordDict && IsSingleEnglishWord(text));
+
+    private static bool IsSakuraModel(string? modelName) =>
+        !string.IsNullOrEmpty(modelName)
+        && modelName.Contains("sakura", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>只认 plamo-3-translate 系列，避免把普通 plamo 对话模型也套上翻译模板。</summary>
+    private static bool IsPlamoTranslateModel(string? modelName) =>
+        !string.IsNullOrEmpty(modelName)
+        && modelName.Contains("plamo", StringComparison.OrdinalIgnoreCase)
+        && modelName.Contains("translate", StringComparison.OrdinalIgnoreCase);
+
+    private static string? PlamoTargetCode(string targetLanguage) => targetLanguage switch
+    {
+        "简体中文" => "zh",
+        "繁体中文" or "繁體中文" => "zh-Hant",
+        "英语" or "英文" => "en",
+        "日语" or "日文" => "ja",
+        "韩语" or "韩文" => "ko",
+        _ => null,
+    };
+
+    private static string PlamoSourceCode(string text)
+    {
+        if (IsMostlyJapanese(text)) return "ja";
+        if (IsMostlyChinese(text)) return "zh";
+        return "en";
+    }
+
+    /// <summary>
+    /// 构造发给模型的消息。只对 plamo-3-translate / sakura 的翻译模式做专属分支，
+    /// 其他模型、润色、解释、词典模式仍使用原来的 BuildPrompt，行为不变。
+    /// </summary>
+    private static object[] BuildMessages(
+        string text, string target, string mode, bool allowWordDict, string? modelName)
+    {
+        if (IsTranslateRequest(mode, allowWordDict, text))
+        {
+            // sakura 只会日译中；其他方向继续用通用提示，避免把它不擅长的方向也硬套模板。
+            if (IsSakuraModel(modelName)
+                && string.Equals(target, "简体中文", StringComparison.Ordinal)
+                && IsMostlyJapanese(text))
+            {
+                return new object[]
+                {
+                    new { role = "system", content = SakuraSystemPrompt },
+                    new { role = "user", content = "将下面的日文文本翻译成中文：" + text },
+                };
+            }
+
+            if (IsPlamoTranslateModel(modelName))
+            {
+                var targetCode = PlamoTargetCode(target);
+                if (targetCode != null)
+                {
+                    var sourceCode = PlamoSourceCode(text);
+                    return new object[]
+                    {
+                        new
+                        {
+                            role = "system",
+                            content = $"[plamo-translate]\ntarget_lang={targetCode}\nsource_lang={sourceCode}\n---",
+                        },
+                        new { role = "user", content = text },
+                    };
+                }
+            }
+        }
+
+        return new object[] { new { role = "user", content = BuildPrompt(text, target, mode, allowWordDict) } };
+    }
+
     /// <summary>判断文本主体是不是中文，用于自动决定翻译方向。</summary>
     public static bool IsMostlyChinese(string text)
     {
@@ -151,6 +231,24 @@ public static class TranslationService
             else other++;
         }
         return han > 0 && han >= other;
+    }
+
+    /// <summary>
+    /// 判断文本主体是不是日语。用假名占比而不是“有没有假名”，避免中文里夹一个
+    /// 日文产品名就被误判；同时能认出汉字很多、假名很少的技术日语。
+    /// </summary>
+    public static bool IsMostlyJapanese(string text)
+    {
+        var kana = 0;
+        var han = 0;
+        foreach (var c in text)
+        {
+            if ((c >= 0x3040 && c <= 0x30FF) || (c >= 0xFF66 && c <= 0xFF9D)) kana++;
+            else if ((c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF)) han++;
+        }
+
+        var total = kana + han;
+        return kana >= 2 && total >= 2 && kana * 100 >= total * 25;
     }
 
     /// <summary>
@@ -209,18 +307,20 @@ public static class TranslationService
         }
         else
         {
-            await foreach (var s in StreamLlamaAsync(text, target, localBaseUrl, mode, allowWordDict, ct))
+            await foreach (var s in StreamLlamaAsync(text, target, localBaseUrl, mode, allowWordDict, cfg.SelectedModel, ct))
                 yield return s;
         }
     }
 
     private static async IAsyncEnumerable<string> StreamLlamaAsync(
-        string text, string target, string baseUrl, string mode, bool allowWordDict,
+        string text, string target, string baseUrl, string mode, bool allowWordDict, string? modelName,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        var messages = BuildMessages(text, target, mode, allowWordDict, modelName);
+
         var payload = new
         {
-            messages = new object[] { new { role = "user", content = BuildPrompt(text, target, mode, allowWordDict) } },
+            messages,
             stream = true,
             n_predict = 1024,
             temperature = 0.7,
@@ -230,7 +330,11 @@ public static class TranslationService
             cache_prompt = true,
         };
 
-        await foreach (var s in PostAndReadAsync(baseUrl.TrimEnd('/') + "/v1/chat/completions", payload, null, ct))
+        // 翻译请求才做重复熔断；润色/解释/词典保持原有输出行为。
+        var detectRepetition = IsTranslateRequest(mode, allowWordDict, text);
+
+        await foreach (var s in PostAndReadAsync(
+                           baseUrl.TrimEnd('/') + "/v1/chat/completions", payload, null, ct, detectRepetition))
             yield return s;
     }
 
@@ -509,7 +613,8 @@ public static class TranslationService
 
     private static async IAsyncEnumerable<string> PostAndReadAsync(
         string url, object payload, string? apiKey,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        bool detectRepetition = false)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, url)
         {
@@ -527,6 +632,9 @@ public static class TranslationService
 
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream, Encoding.UTF8);
+
+        var guard = detectRepetition ? new RepetitionGuard() : null;
+        var fullText = detectRepetition ? new StringBuilder() : null;
 
         while (!reader.EndOfStream)
         {
@@ -553,10 +661,69 @@ public static class TranslationService
                 if (!delta.TryGetProperty("content", out var content)) continue;
 
                 var piece = content.GetString();
-                if (!string.IsNullOrEmpty(piece)) yield return piece;
+                if (!string.IsNullOrEmpty(piece))
+                {
+                    if (guard != null && fullText != null)
+                    {
+                        fullText.Append(piece);
+                        yield return piece;
+
+                        // 先让这一片正常显示，再判断是否进入“同一段话连续重复”的循环。
+                        // 一旦命中就结束枚举，释放 HTTP 响应，llama-server 随连接关闭停止生成。
+                        if (guard.ShouldStop(fullText)) yield break;
+                    }
+                    else
+                    {
+                        yield return piece;
+                    }
+                }
             }
         }
     }
 
     private static string Brief(string s) => s.Length > 240 ? s[..240] + "…" : s;
+
+    /// <summary>
+    /// 流式重复熔断器。只做内存里的字符比较，不改 temperature / n_predict / 模型参数，
+    /// 也不改变正常译文的输出；检测到结尾同一段 12–96 字连续出现 3 次就判定为循环。
+    /// </summary>
+    private sealed class RepetitionGuard
+    {
+        private const int MinPeriod = 12;
+        private const int MaxPeriod = 96;
+        private const int Repeats = 3;
+
+        private int _lastLength;
+
+        public bool ShouldStop(StringBuilder text)
+        {
+            var len = text.Length;
+            if (len < MinPeriod * Repeats) return false;
+
+            // 每积累 8 个字符才检查一次，避免每个 token 都把整段扫一遍。
+            if (len - _lastLength < 8) return false;
+            _lastLength = len;
+
+            var maxPeriod = Math.Min(MaxPeriod, len / Repeats);
+            for (var period = MinPeriod; period <= maxPeriod; period++)
+            {
+                var last = len - period;
+                var prev = last - period;
+                var prev2 = prev - period;
+
+                if (BlockEquals(text, prev2, prev, period)
+                    && BlockEquals(text, prev, last, period))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool BlockEquals(StringBuilder s, int a, int b, int len)
+        {
+            for (var i = 0; i < len; i++)
+                if (s[a + i] != s[b + i]) return false;
+            return true;
+        }
+    }
 }

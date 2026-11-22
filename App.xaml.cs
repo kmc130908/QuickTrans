@@ -53,12 +53,24 @@ public partial class App : System.Windows.Application
     private string _currentMode = "translate";
 
     private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "quicktrans.log");
+    private static readonly object LogGate = new();
 
     public static void Log(string message)
     {
         try
         {
-            File.AppendAllText(LogPath, $"{DateTime.Now:HH:mm:ss.fff}  {message}{Environment.NewLine}");
+            lock (LogGate)
+            {
+                // 超过 1MB 就滚一份，避免长期使用后日志无限增长
+                var fi = new FileInfo(LogPath);
+                if (fi.Exists && fi.Length > 1_000_000)
+                {
+                    var old = LogPath + ".1";
+                    try { if (File.Exists(old)) File.Delete(old); } catch { }
+                    try { File.Move(LogPath, old); } catch { }
+                }
+                File.AppendAllText(LogPath, $"{DateTime.Now:HH:mm:ss.fff}  {message}{Environment.NewLine}");
+            }
         }
         catch { /* 日志写不进不影响运行 */ }
     }
@@ -200,7 +212,7 @@ public partial class App : System.Windows.Application
             _config.WelcomeShown = true;
             _config.Save();
             var needGuideAfterWelcome = !_config.ComponentHintShown && _engine != null
-                && (_engine.ScanModels().Count == 0 || (HasNvidiaGpu() && !HasGpuEngine()));
+                && _engine.ScanModels(_config.CustomModelPaths).Count == 0;
             if (needGuideAfterWelcome)
             {
                 _config.ComponentHintShown = true;
@@ -214,17 +226,12 @@ public partial class App : System.Windows.Application
             }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
 
-        // 首次运行引导：
-        //  - 一个模型都没有 → 必然要引导
-        //  - 有 NVIDIA 显卡但装的是 CPU 引擎 → 提示可以下 GPU 引擎
-        // 只提示一次，之后用户自己从托盘菜单进。
+        // 首次运行引导：一个模型都没有时引导下载本地模型（只提示一次）
         var guided = false;
         if (!interrupted && !_config.ComponentHintShown && _engine != null)
         {
-            var needModel = _engine.ScanModels().Count == 0;
-            var canUpgradeGpu = HasNvidiaGpu() && !HasGpuEngine();
-
-            if (needModel || canUpgradeGpu)
+            var needModel = _engine.ScanModels(_config.CustomModelPaths).Count == 0;
+            if (needModel)
             {
                 guided = true;
                 _config.ComponentHintShown = true;
@@ -246,7 +253,20 @@ public partial class App : System.Windows.Application
     private string EngineLabel()
     {
         if (string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
-            return string.IsNullOrWhiteSpace(_config.ApiModel) ? "在线接口" : $"在线 · {_config.ApiModel}";
+        {
+            var tag = !string.IsNullOrWhiteSpace(_config.ActiveProfile)
+                ? _config.ActiveProfile
+                : !string.IsNullOrWhiteSpace(_config.ApiModel)
+                    ? _config.ApiModel
+                    : _config.ApiType switch
+                    {
+                        "baidu" => "百度翻译",
+                        "youdao" => "有道智云",
+                        "google" => "谷歌翻译",
+                        _ => "",
+                    };
+            return string.IsNullOrWhiteSpace(tag) ? "在线接口" : $"在线 · {tag}";
+        }
 
         var name = string.IsNullOrWhiteSpace(_config.SelectedModel) ? "本地模型" : _config.SelectedModel;
         if (name.Length > 26) name = name[..26] + "…";
@@ -285,9 +305,6 @@ public partial class App : System.Windows.Application
         var settingsItem = new WinForms.ToolStripMenuItem("设置…");
         settingsItem.Click += (_, _) => OpenSettings();
 
-        var componentsItem = new WinForms.ToolStripMenuItem("组件管理（引擎/模型）…");
-        componentsItem.Click += (_, _) => OpenComponentManager();
-
         _updateItem = new WinForms.ToolStripMenuItem("发现新版本…")
         {
             Visible = false,
@@ -297,6 +314,12 @@ public partial class App : System.Windows.Application
 
         var modelMenu = new WinForms.ToolStripMenuItem("切换本地模型");
         modelMenu.DropDownOpening += (_, _) => FillModelMenu(modelMenu);
+
+        var apiMenu = new WinForms.ToolStripMenuItem("切换在线接口");
+        apiMenu.DropDownOpening += (_, _) => FillApiMenu(apiMenu);
+
+        var deviceMenu = new WinForms.ToolStripMenuItem("本地推理设备");
+        deviceMenu.DropDownOpening += (_, _) => FillDeviceMenu(deviceMenu);
 
         var exitItem = new WinForms.ToolStripMenuItem("退出");
         exitItem.Click += (_, _) => ExitApp();
@@ -308,7 +331,8 @@ public partial class App : System.Windows.Application
         menu.Items.Add(historyItem);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(modelMenu);
-        menu.Items.Add(componentsItem);
+        menu.Items.Add(apiMenu);
+        menu.Items.Add(deviceMenu);
         menu.Items.Add(_updateItem);
         menu.Items.Add(settingsItem);
         menu.Items.Add(new WinForms.ToolStripSeparator());
@@ -321,30 +345,143 @@ public partial class App : System.Windows.Application
     private void FillModelMenu(WinForms.ToolStripMenuItem parent)
     {
         parent.DropDownItems.Clear();
-        var models = _engine?.ScanModels() ?? new List<ModelInfo>();
+        var models = _engine?.ScanModels(_config.CustomModelPaths) ?? new List<ModelInfo>();
 
         if (models.Count == 0)
         {
-            parent.DropDownItems.Add(new WinForms.ToolStripMenuItem("（models 目录里还没有模型）") { Enabled = false });
+            parent.DropDownItems.Add(new WinForms.ToolStripMenuItem("（还没有本地模型，可在「设置 → 模型与引擎」添加或下载）") { Enabled = false });
             return;
         }
 
+        var isLocal = !string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase);
         foreach (var m in models)
         {
-            var item = new WinForms.ToolStripMenuItem($"{m.DisplayName}  ·  {m.SizeText}")
+            var suffix = m.IsCustomPath ? " · 外部" : "";
+            var item = new WinForms.ToolStripMenuItem($"{m.DisplayName}  ·  {m.SizeText}{suffix}")
             {
-                Checked = string.Equals(m.DisplayName, _config.SelectedModel, StringComparison.OrdinalIgnoreCase),
+                Checked = isLocal && string.Equals(m.DisplayName, _config.SelectedModel, StringComparison.OrdinalIgnoreCase),
             };
             var captured = m;
             item.Click += async (_, _) =>
             {
                 _config.SelectedModel = captured.DisplayName;
                 _config.Engine = "local";
-                _config.Save();
+                // 只回写这两个字段，避免把设置页刚保存的其它选项用旧配置盖掉
+                AppConfig.Update(c =>
+                {
+                    c.SelectedModel = captured.DisplayName;
+                    c.Engine = "local";
+                });
+                _popup?.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
+
+                // 关键：EnsureEngineAsync 在“引擎已就绪”时直接复用当前 llama-server，
+                // 不比对模型。这里必须先卸载旧模型，否则切了模型还是旧模型在翻译。
+                if (_engine is { IsRunning: true }
+                    && !string.Equals(_engine.LoadedModelPath, captured.FilePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    Log($"tray model switch: unload {_engine.LoadedModelPath ?? "(none)"} -> {captured.FilePath}");
+                    _engine.Unload();
+                }
+
                 await PrewarmAsync();
             };
             parent.DropDownItems.Add(item);
         }
+    }
+
+    private void FillApiMenu(WinForms.ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Clear();
+        var profiles = _config.ApiProfiles ?? new List<ApiProfile>();
+
+        if (profiles.Count == 0)
+        {
+            parent.DropDownItems.Add(new WinForms.ToolStripMenuItem("（暂无已保存接口，请在「设置 → 在线接口」添加）") { Enabled = false });
+            return;
+        }
+
+        var isApi = string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase);
+        foreach (var p in profiles)
+        {
+            var typeLabel = p.Type?.ToLowerInvariant() switch
+            {
+                "baidu" => "百度",
+                "youdao" => "有道",
+                "google" => "谷歌",
+                _ => "OpenAI",
+            };
+            var item = new WinForms.ToolStripMenuItem($"{p.Name}  ·  {typeLabel}")
+            {
+                Checked = isApi && string.Equals(p.Name, _config.ActiveProfile, StringComparison.Ordinal),
+            };
+            var captured = p;
+            item.Click += (_, _) =>
+            {
+                var type = string.IsNullOrWhiteSpace(captured.Type) ? "openai" : captured.Type;
+                var baseUrl = captured.BaseUrl ?? "";
+                var apiKey = captured.ApiKey ?? "";
+                var apiModel = captured.Model ?? "";
+
+                _config.Engine = "api";
+                _config.ActiveProfile = captured.Name;
+                _config.ApiType = type;
+                _config.ApiBaseUrl = baseUrl;
+                _config.ApiKey = apiKey;
+                _config.ApiModel = apiModel;
+
+                // 只回写接口相关字段，保留设置页里其它刚改过的选项
+                AppConfig.Update(c =>
+                {
+                    c.Engine = "api";
+                    c.ActiveProfile = captured.Name;
+                    c.ApiType = type;
+                    c.ApiBaseUrl = baseUrl;
+                    c.ApiKey = apiKey;
+                    c.ApiModel = apiModel;
+                });
+                _popup?.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
+                Log($"tray switched api profile: {captured.Name} ({captured.Type})");
+            };
+            parent.DropDownItems.Add(item);
+        }
+    }
+
+    private void FillDeviceMenu(WinForms.ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Clear();
+
+        var gpuOk = _engine?.SupportsGpu == true;
+        var usingGpu = _config.UseGpu && gpuOk;
+
+        var gpuItem = new WinForms.ToolStripMenuItem(gpuOk ? "GPU 加速（快，占显存）" : "GPU 加速（未检测到可用 GPU）")
+        {
+            Enabled = gpuOk,
+            Checked = usingGpu,
+        };
+        gpuItem.Click += (_, _) =>
+        {
+            if (_config.UseGpu) return;
+            _config.UseGpu = true;
+            AppConfig.Update(c => c.UseGpu = true);
+            if (_engine is { IsRunning: true }) _engine.Unload();
+            Log("tray switched local device -> GPU");
+        };
+
+        var cpuItem = new WinForms.ToolStripMenuItem("CPU 推理（不占显存）")
+        {
+            Checked = !usingGpu,
+        };
+        cpuItem.Click += (_, _) =>
+        {
+            if (!_config.UseGpu) return;
+            _config.UseGpu = false;
+            AppConfig.Update(c => c.UseGpu = false);
+            if (_engine is { IsRunning: true }) _engine.Unload();
+            Log("tray switched local device -> CPU");
+        };
+
+        parent.DropDownItems.Add(gpuItem);
+        parent.DropDownItems.Add(cpuItem);
     }
 
     private static Drawing.Icon CreateTrayIcon(int style)
@@ -526,11 +663,20 @@ public partial class App : System.Windows.Application
             }
 
             var sb = new System.Text.StringBuilder();
-            await Task.Run(async () =>
+            var localEngine = !string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase);
+            if (localEngine) _engine?.BeginTranslateLease();
+            try
             {
-                await foreach (var piece in TranslationService.TranslateAsync(text, _config, baseUrl, target, ct))
-                    sb.Append(piece);
-            }, ct);
+                await Task.Run(async () =>
+                {
+                    await foreach (var piece in TranslationService.TranslateAsync(text, _config, baseUrl, target, ct))
+                        sb.Append(piece);
+                }, ct);
+            }
+            finally
+            {
+                if (localEngine) _engine?.EndTranslateLease();
+            }
 
             _engine?.MarkUsed();
 
@@ -702,7 +848,8 @@ public partial class App : System.Windows.Application
         popup.QuickLanguagesChanged += langs =>
         {
             _config.QuickLanguages = langs;
-            _config.Save();
+            // 只回写快捷语言，避免把别处刚保存的设置整份覆盖
+            AppConfig.Update(c => c.QuickLanguages = new List<string>(langs));
             Log("quick languages updated: " + string.Join(",", langs));
         };
 
@@ -979,14 +1126,23 @@ public partial class App : System.Windows.Application
             // UI 线程由浮窗自己的 DispatcherTimer 每 100ms 刷一次，
             // 这样鼠标拖动、点击按钮全程零卡顿。
             var baseUrl = _engine!.BaseUrl;
-            await Task.Run(async () =>
+            var localEngine = !string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase);
+            if (localEngine) _engine?.BeginTranslateLease();
+            try
             {
-                await foreach (var piece in TranslationService.TranslateAsync(
-                    source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                await Task.Run(async () =>
                 {
-                    popup.AppendChunk(piece);
-                }
-            }, ct);
+                    await foreach (var piece in TranslationService.TranslateAsync(
+                        source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                    {
+                        popup.AppendChunk(piece);
+                    }
+                }, ct);
+            }
+            finally
+            {
+                if (localEngine) _engine?.EndTranslateLease();
+            }
 
             Log("translate done");
             _engine?.MarkUsed();
@@ -1087,14 +1243,23 @@ public partial class App : System.Windows.Application
             popup.StartStreaming();
 
             var baseUrl = _engine!.BaseUrl;
-            await Task.Run(async () =>
+            var localEngine = !string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase);
+            if (localEngine) _engine?.BeginTranslateLease();
+            try
             {
-                await foreach (var piece in TranslationService.TranslateAsync(
-                    source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                await Task.Run(async () =>
                 {
-                    popup.AppendChunk(piece);
-                }
-            }, ct);
+                    await foreach (var piece in TranslationService.TranslateAsync(
+                        source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                    {
+                        popup.AppendChunk(piece);
+                    }
+                }, ct);
+            }
+            finally
+            {
+                if (localEngine) _engine?.EndTranslateLease();
+            }
 
             _engine?.MarkUsed();
             if (!ct.IsCancellationRequested)
@@ -1187,9 +1352,9 @@ public partial class App : System.Windows.Application
             return (true, "就绪");
         }
 
-        var models = _engine.ScanModels();
+        var models = _engine.ScanModels(_config.CustomModelPaths);
         if (models.Count == 0)
-            return (false, "models 目录里没有 .gguf 模型。\n\n把一个 GGUF 文件放进 models 文件夹，然后在设置里点刷新。");
+            return (false, "还没有可用的本地 .gguf 模型。\n\n请在「设置 → 模型与引擎」中下载模型或手动添加电脑中的 .gguf 文件。");
 
         var model = models.FirstOrDefault(m =>
                         string.Equals(m.DisplayName, _config.SelectedModel, StringComparison.OrdinalIgnoreCase))
@@ -1198,7 +1363,8 @@ public partial class App : System.Windows.Application
         if (!string.Equals(model.DisplayName, _config.SelectedModel, StringComparison.OrdinalIgnoreCase))
         {
             _config.SelectedModel = model.DisplayName;
-            _config.Save();
+            // 只回写模型名，避免覆盖设置页刚保存的其它配置
+            AppConfig.Update(c => c.SelectedModel = model.DisplayName);
         }
 
         _popup?.SetStatus($"正在加载 {model.DisplayName} …");
@@ -1398,10 +1564,10 @@ public partial class App : System.Windows.Application
     {
         try
         {
-            var win = new WelcomeWindow();
+            var cfg = AppConfig.Load();
+            var win = new WelcomeWindow(cfg.Theme);
             win.Closed += (_, _) => Shutdown();
-            win.Show();
-            win.Activate();
+            WindowPlacer.SurfaceWindow(win);
         }
         catch
         {
@@ -1413,15 +1579,15 @@ public partial class App : System.Windows.Application
     {
         try
         {
+            var cfg = AppConfig.Load();
             var auto = ParseComponentArg();
             var mgr = new ComponentManager(AppContext.BaseDirectory);
             var win = auto.Length > 0
-                ? new ComponentWindow(mgr, auto)
-                : new ComponentWindow(mgr);
+                ? new ComponentWindow(mgr, auto, cfg.CustomModelPaths, cfg.Theme)
+                : new ComponentWindow(mgr, cfg.CustomModelPaths, cfg.Theme);
             MainWindow = win;
             win.Closed += (_, _) => Shutdown();
-            win.Show();
-            win.Activate();
+            WindowPlacer.SurfaceWindow(win);
         }
         catch
         {
@@ -1545,14 +1711,25 @@ public partial class App : System.Windows.Application
                     popup.SetStatus(FormatModeStatus(effectiveMode, target, isDict));
                     popup.StartStreaming();
 
-                    await Task.Run(async () =>
+                    // 告诉主进程“正在翻译”，避免长文本翻到一半被闲置卸载杀掉引擎。
+                    // 结束/异常都会解除；子进程被强杀时租约也会自动过期。
+                    var localEngine = !string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase);
+                    if (localEngine) _ = AppIpcClient.SendAsync("TRANSLATE_ACTIVE");
+                    try
                     {
-                        await foreach (var piece in TranslationService.TranslateAsync(
-                            source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                        await Task.Run(async () =>
                         {
-                            popup.AppendChunk(piece);
-                        }
-                    }, ct);
+                            await foreach (var piece in TranslationService.TranslateAsync(
+                                source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                            {
+                                popup.AppendChunk(piece);
+                            }
+                        }, ct);
+                    }
+                    finally
+                    {
+                        if (localEngine) _ = AppIpcClient.SendAsync("TRANSLATE_IDLE");
+                    }
 
                     if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
                         _ = AppIpcClient.SendAsync("MARK_USED");
@@ -1650,7 +1827,8 @@ public partial class App : System.Windows.Application
             popup.QuickLanguagesChanged += langs =>
             {
                 _config.QuickLanguages = langs;
-                _config.Save();
+                // 子进程内存里的配置可能已过期，只回写快捷语言，别整份覆盖
+                AppConfig.Update(c => c.QuickLanguages = new List<string>(langs));
                 _ = AppIpcClient.SendAsync("RELOAD_CONFIG");
             };
 
@@ -1873,14 +2051,25 @@ public partial class App : System.Windows.Application
                     popup.SetStatus(FormatModeStatus(effectiveMode, target, isDict));
                     popup.StartStreaming();
 
-                    await Task.Run(async () =>
+                    // 告诉主进程“正在翻译”，避免长文本翻到一半被闲置卸载杀掉引擎。
+                    // 结束/异常都会解除；子进程被强杀时租约也会自动过期。
+                    var localEngine = !string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase);
+                    if (localEngine) _ = AppIpcClient.SendAsync("TRANSLATE_ACTIVE");
+                    try
                     {
-                        await foreach (var piece in TranslationService.TranslateAsync(
-                            source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                        await Task.Run(async () =>
                         {
-                            popup.AppendChunk(piece);
-                        }
-                    }, ct);
+                            await foreach (var piece in TranslationService.TranslateAsync(
+                                source, _config, baseUrl, target, ct, effectiveMode, isDict))
+                            {
+                                popup.AppendChunk(piece);
+                            }
+                        }, ct);
+                    }
+                    finally
+                    {
+                        if (localEngine) _ = AppIpcClient.SendAsync("TRANSLATE_IDLE");
+                    }
 
                     if (!string.Equals(_config.Engine, "api", StringComparison.OrdinalIgnoreCase))
                         _ = AppIpcClient.SendAsync("MARK_USED");
@@ -1957,7 +2146,8 @@ public partial class App : System.Windows.Application
             popup.QuickLanguagesChanged += langs =>
             {
                 _config.QuickLanguages = langs;
-                _config.Save();
+                // 子进程内存里的配置可能已过期，只回写快捷语言，别整份覆盖
+                AppConfig.Update(c => c.QuickLanguages = new List<string>(langs));
                 _ = AppIpcClient.SendAsync("RELOAD_CONFIG");
             };
 
@@ -1985,7 +2175,8 @@ public partial class App : System.Windows.Application
             popup.Show();
             var hwnd = new WindowInteropHelper(popup).Handle;
             if (hwnd != IntPtr.Zero)
-                _ = AppIpcClient.SendAsync($"POPUP_HWND\t{hwnd.ToInt64()}");
+                // 带上自己的 pid：主进程据此丢弃上一个正在退出的子进程晚到的句柄
+                _ = AppIpcClient.SendAsync($"POPUP_HWND\t{hwnd.ToInt64()}\t{Environment.ProcessId}");
 
             if (ocrMode && ocrRegion.HasValue)
             {
@@ -2069,11 +2260,22 @@ public partial class App : System.Windows.Application
 
         if (command.StartsWith("POPUP_HWND\t", StringComparison.Ordinal))
         {
-            if (long.TryParse(command["POPUP_HWND\t".Length..], out var raw))
+            var parts = command.Split('\t');
+            if (parts.Length >= 2 && long.TryParse(parts[1], out var raw))
             {
                 var hwnd = new IntPtr(raw);
+                var senderPid = parts.Length >= 3 && int.TryParse(parts[2], out var sp) ? sp : 0;
                 await Dispatcher.InvokeAsync(() =>
                 {
+                    // 只接受“当前浮窗子进程”报上来的句柄。连续快速触发时，
+                    // 上一个正在退出的子进程可能晚到，把新浮窗的句柄覆盖掉，
+                    // 导致之后按 Ctrl+Q 关不掉浮窗。
+                    if (senderPid != 0 && _popupProc is { HasExited: false } && _popupProc.Id != senderPid)
+                    {
+                        Log($"ignore stale POPUP_HWND from pid={senderPid}");
+                        return;
+                    }
+
                     _popupChildHwnd = hwnd;
                     if (_settingsChildHwnd != IntPtr.Zero)
                         PostMessage(hwnd, ThemeManager.WM_QT_SET_AUX_HWND, new IntPtr(1), _settingsChildHwnd);
@@ -2148,6 +2350,27 @@ public partial class App : System.Windows.Application
         if (command == "MARK_USED")
         {
             _engine?.MarkUsed();
+            return "OK";
+        }
+
+        // 子进程开始/结束一次翻译：期间禁止闲置卸载，但不影响翻译结束后正常卸载
+        if (command == "TRANSLATE_ACTIVE")
+        {
+            _engine?.BeginTranslateLease();
+            return "OK";
+        }
+
+        if (command == "TRANSLATE_IDLE")
+        {
+            _engine?.EndTranslateLease();
+            return "OK";
+        }
+
+        // 子进程写剪贴板（复制译文/替换粘贴）时让主进程跳过连按两次 Ctrl+C 的判定
+        if (command.StartsWith("SUPPRESS_CLIPBOARD\t", StringComparison.Ordinal))
+        {
+            if (int.TryParse(command["SUPPRESS_CLIPBOARD\t".Length..], out var ms))
+                ClipboardWatcher.SuppressFor(Math.Clamp(ms, 100, 15000));
             return "OK";
         }
 

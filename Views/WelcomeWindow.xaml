@@ -1,117 +1,202 @@
 <Window x:Class="QuickTrans.Views.WelcomeWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="欢迎使用 QuickTrans" Width="560" Height="460"
+        Title="欢迎使用 QuickTrans" Width="580" Height="490"
         WindowStartupLocation="CenterScreen"
-        Background="#F5F5F7"
-        FontFamily="Microsoft YaHei UI"
+        Background="{DynamicResource BrushWindowBg}"
+        Foreground="{DynamicResource BrushTextPrimary}"
+        FontFamily="{StaticResource UiFont}"
         TextOptions.TextFormattingMode="Display"
         UseLayoutRounding="True"
         ResizeMode="NoResize">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="BrushWindowBg" Color="#F5F6FA" />
+        <SolidColorBrush x:Key="BrushCardBg" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="BrushBorder" Color="#D4D8E4" />
+        <SolidColorBrush x:Key="BrushTextPrimary" Color="#14151A" />
+        <SolidColorBrush x:Key="BrushTextSecondary" Color="#3A3D4A" />
+        <SolidColorBrush x:Key="BrushTextMuted" Color="#646876" />
+        <SolidColorBrush x:Key="BrushAccent" Color="#2F54A8" />
+        <SolidColorBrush x:Key="BrushPillBg" Color="#EBEDF4" />
+
+        <Style x:Key="GuideCard" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource BrushCardBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="15,12" />
+            <Setter Property="Margin" Value="0,10,0,0" />
+        </Style>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 三页内容，靠 Visibility 切换 -->
-        <Grid Grid.Row="0" Margin="40,36,40,0">
+        <!-- 四页引导，覆盖划词/OCR/替换、浮窗增强、主题与免打扰、模型与接口 -->
+        <Grid Grid.Row="0" Margin="38,32,38,0">
 
+            <!-- 第 1 页：核心触发方式 -->
             <StackPanel x:Name="Page1">
-                <TextBlock Text="选中文字，按 Ctrl+Q" FontSize="22" FontWeight="SemiBold"
-                           Foreground="#1A1A1E" />
-                <TextBlock Margin="0,14,0,0" FontSize="13.5" Foreground="#4A4A54"
-                           TextWrapping="Wrap" LineHeight="24"
-                           Text="在任何软件里选中一段文字，按下 Ctrl+Q，译文会出现在选中文字的下面。" />
+                <TextBlock Text="四种方式，随选随译" FontSize="21" FontWeight="SemiBold"
+                           Foreground="{DynamicResource BrushTextPrimary}" />
+                <TextBlock Margin="0,8,0,6" FontSize="13" Foreground="{DynamicResource BrushTextSecondary}"
+                           TextWrapping="Wrap" LineHeight="21"
+                           Text="在任意软件中都能快速呼出翻译，且默认不抢焦点、不破坏选区：" />
 
-                <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,22,0,0">
+                <Border Style="{StaticResource GuideCard}">
                     <StackPanel>
-                        <TextBlock Text="✻  浮窗不会抢走焦点，也不会误关" FontSize="12.5" Foreground="#1A1A1E" />
-                        <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
-                                   TextWrapping="Wrap"
-                                   Text="选区保持原样，继续滚动或点击当前窗口不会关掉浮窗；切到其它软件后 5 秒自动关闭（悬停可暂停）。" />
+                        <TextBlock Text="🖱  划词 / 手动输入  ·  Ctrl+Q" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="选中文字按 Ctrl+Q 弹出译文（可选在设置中开启「连按两次 Ctrl+C」触发）；未选文字时自动切为输入框，按 Ctrl+Enter 提交。" />
                     </StackPanel>
                 </Border>
 
-                <TextBlock Margin="0,18,0,0" FontSize="12.5" Foreground="#4A4A54"
-                           TextWrapping="Wrap"
-                           Text="按住浮窗任意空白或译文区域可拖动；再按一次 Ctrl+Q 或 Esc 可手动关闭。" />
+                <Border Style="{StaticResource GuideCard}">
+                    <StackPanel>
+                        <TextBlock Text="🖼  多屏截图翻译  ·  Alt+S" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="支持跨多显示器框选任意区域，调用 Windows 离线 OCR 识别并翻译，适合图片、视频字幕和不可复制界面。" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource GuideCard}">
+                    <StackPanel>
+                        <TextBlock Text="⇄  一键替换翻译  ·  Alt+R" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="在聊天框、文档或邮件里选中文字按 Alt+R，翻译后直接粘贴替换原文（也可点浮窗顶部「替换」按钮）。" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
+            <!-- 第 2 页：阅读与写作增强 -->
             <StackPanel x:Name="Page2" Visibility="Collapsed">
-                <TextBlock Text="截图、手输，都能翻" FontSize="22" FontWeight="SemiBold"
-                           Foreground="#1A1A1E" />
-                <TextBlock Margin="0,14,0,0" FontSize="13.5" Foreground="#4A4A54"
-                           TextWrapping="Wrap" LineHeight="24"
-                           Text="除了划词，还有两种入口：" />
+                <TextBlock Text="不只是翻译：词典、润色与历史" FontSize="21" FontWeight="SemiBold"
+                           Foreground="{DynamicResource BrushTextPrimary}" />
+                <TextBlock Margin="0,8,0,6" FontSize="13" Foreground="{DynamicResource BrushTextSecondary}"
+                           TextWrapping="Wrap" LineHeight="21"
+                           Text="浮窗内置多项高效工具，适合阅读外文论文、查词与写英文消息：" />
 
-                <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,16,0,0">
+                <Border Style="{StaticResource GuideCard}">
                     <StackPanel>
-                        <TextBlock Text="🖼  截图翻译  ·  Alt+S" FontSize="12.5" Foreground="#1A1A1E" />
-                        <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
-                                   TextWrapping="Wrap"
-                                   Text="框选屏幕上的任意区域，调用系统离线 OCR 识别文字再翻译。适合图片、视频字幕、不能复制的界面。" />
+                        <TextBlock Text="📖  单词词典 &amp; 场景切换（译 / 润 / 解）" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="选中单个英文单词自动输出音标、词性、释义与双语例句；底部可一键切换「译（翻译）/ 润（地道润色）/ 解（术语或代码解释）」。" />
                     </StackPanel>
                 </Border>
 
-                <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,10,0,0">
+                <Border Style="{StaticResource GuideCard}">
                     <StackPanel>
-                        <TextBlock Text="⌨  手动输入  ·  没选中文字时按 Ctrl+Q" FontSize="12.5" Foreground="#1A1A1E" />
-                        <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
-                                   TextWrapping="Wrap"
-                                   Text="浮窗变成输入框，可直接打字或粘贴多段文本，按 Ctrl+Enter 翻译，改完可反复重译。" />
+                        <TextBlock Text="📄  PDF 智能去换行 &amp; 离线语音朗读" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="自动合并论文/PDF 中的多余断行，保留段落结构；点浮窗 🔊 可调用系统语音包离线朗读（再点即停）。" />
                     </StackPanel>
                 </Border>
 
-                <TextBlock Margin="0,18,0,0" FontSize="12.5" Foreground="#4A4A54"
-                           TextWrapping="Wrap"
-                           Text="浮窗操作栏可一键切换目标语言、离线朗读（再点即停）或复制译文。" />
+                <Border Style="{StaticResource GuideCard}">
+                    <StackPanel>
+                        <TextBlock Text="📌  钉住浮窗 &amp; 🕘 本地翻译历史" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="点 📌 暂不自动关闭，方便对照阅读；点 🕘 可搜索、复制最近 100 条本地翻译记录（独立进程运行，关窗零占用）。" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
+            <!-- 第 3 页：外观、免打扰与托盘快捷操作 -->
             <StackPanel x:Name="Page3" Visibility="Collapsed">
-                <TextBlock Text="准备翻译模型或在线接口" FontSize="22" FontWeight="SemiBold"
-                           Foreground="#1A1A1E" />
-                <TextBlock Margin="0,14,0,0" FontSize="13.5" Foreground="#4A4A54"
-                           TextWrapping="Wrap" LineHeight="24"
-                           Text="本地翻译全程离线免费，首次使用只需下载一个模型（也可改用在线 API）：" />
+                <TextBlock Text="深浅主题、免打扰与托盘快切" FontSize="21" FontWeight="SemiBold"
+                           Foreground="{DynamicResource BrushTextPrimary}" />
+                <TextBlock Margin="0,8,0,6" FontSize="13" Foreground="{DynamicResource BrushTextSecondary}"
+                           TextWrapping="Wrap" LineHeight="21"
+                           Text="轻量低占用设计（极低待机模式仅约 15–18 MB），细节完全可控：" />
 
-                <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,14,0,0">
+                <Border Style="{StaticResource GuideCard}">
                     <StackPanel>
-                        <TextBlock Text="📦  下载本地模型（推荐）" FontSize="12.5" Foreground="#1A1A1E" />
-                        <TextBlock Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
-                                   TextWrapping="Wrap"
-                                   Text="在「组件管理」中下载 Qwen3-0.6B（609MB，阿里源直连）或 Hy-MT2-1.8B（1.06GB，翻译质量最稳）。" />
+                        <TextBlock Text="🌓  实时浅色 / 深色 / 跟随系统主题" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="在「设置 → 浮窗与外观」切换主题与背景透明度，所有已打开的浮窗、设置页与历史窗同步即时生效。" />
                     </StackPanel>
                 </Border>
 
-                <Border Background="White" CornerRadius="8" Padding="16,14" Margin="0,10,0,0">
+                <Border Style="{StaticResource GuideCard}">
                     <StackPanel>
-                        <TextBlock x:Name="AccelTitle" Text="⚡  已内置 GPU 通用加速" FontSize="12.5" Foreground="#1A1A1E" />
-                        <TextBlock x:Name="AccelDesc" Margin="0,6,0,0" FontSize="12" Foreground="#6B6B75"
-                                   TextWrapping="Wrap"
-                                   Text="支持 NVIDIA / AMD / Intel 显卡自动加速，也可在设置里随时切回 CPU。不想下模型也可在设置里配置 DeepSeek / 百度 / 有道 / 谷歌接口。" />
+                        <TextBlock Text="🔕  全屏免打扰 &amp; 应用黑名单" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="在「设置 → 免打扰」可分别开启全屏游戏/全屏视频屏蔽，或直接勾选当前运行程序加入黑名单，防止误触。" />
                     </StackPanel>
                 </Border>
 
-                <TextBlock Margin="0,16,0,0" FontSize="12.5" Foreground="#4A4A54"
-                           TextWrapping="Wrap"
-                           Text="以上入口随时可在「设置 → 关于与更新」里重新打开。首次翻译时按需加载模型，待机更省内存。" />
+                <Border Style="{StaticResource GuideCard}">
+                    <StackPanel>
+                        <TextBlock Text="⚡  右键托盘快捷切换" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="右键右下角托盘图标，可直接切换本地模型、已保存的在线接口、以及 GPU / CPU 推理设备，无需反复进设置。" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- 第 4 页：准备模型或在线接口 -->
+            <StackPanel x:Name="Page4" Visibility="Collapsed">
+                <TextBlock Text="准备本地模型或在线接口" FontSize="21" FontWeight="SemiBold"
+                           Foreground="{DynamicResource BrushTextPrimary}" />
+                <TextBlock Margin="0,8,0,6" FontSize="13" Foreground="{DynamicResource BrushTextSecondary}"
+                           TextWrapping="Wrap" LineHeight="21"
+                           Text="本地翻译全程离线免费，首次使用只需准备一个模型（或改用在线接口）：" />
+
+                <Border Style="{StaticResource GuideCard}">
+                    <StackPanel>
+                        <TextBlock Text="📦  下载或添加任意位置的 .gguf 模型" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="在「设置 → 模型与引擎」中点「下载模型…」一键获取（推荐 Hy-MT2-1.8B 或 Qwen3），也可点「添加本地模型…」直接选用电脑里任意位置的 .gguf 文件。" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource GuideCard}">
+                    <StackPanel>
+                        <TextBlock x:Name="AccelTitle" Text="⚡  已内置 Vulkan 通用 GPU + CPU 引擎" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock x:Name="AccelDesc" Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="NVIDIA / AMD / Intel 显卡均可自动加速；切换为 CPU 模式时显存占用为 0 MB。支持闲置自动卸载模型释放内存/显存。" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource GuideCard}">
+                    <StackPanel>
+                        <TextBlock Text="🌐  或使用在线翻译接口" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"
+                                   Text="在「设置 → 在线接口」支持保存多套 DeepSeek / 智谱 / OpenAI 兼容 / 百度 / 有道 / 谷歌接口，随时一键切换。" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </Grid>
 
         <!-- 底部：进度点 + 按钮 -->
-        <Grid Grid.Row="1" Margin="40,0,40,28">
+        <Grid Grid.Row="1" Margin="38,0,38,24">
             <StackPanel x:Name="DotPanel" Orientation="Horizontal" VerticalAlignment="Center" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="SkipButton" Content="跳过" Padding="16,6" FontSize="12.5"
+                <Button x:Name="SkipButton" Content="跳过" Padding="14,6" FontSize="12.5"
                         Cursor="Hand" Click="OnSkipClick"
-                        Background="Transparent" BorderThickness="0" Foreground="#8A8A93" />
-                <Button x:Name="PrevButton" Content="上一步" Padding="18,6" FontSize="12.5"
+                        Background="Transparent" BorderThickness="0" Foreground="{DynamicResource BrushTextMuted}" />
+                <Button x:Name="PrevButton" Content="上一步" Padding="16,6" FontSize="12.5"
                         Margin="6,0,0,0" Cursor="Hand" Click="OnPrevClick"
-                        Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
-                <Button x:Name="NextButton" Content="下一步" Padding="20,6" FontSize="12.5"
+                        Background="{DynamicResource BrushPillBg}" BorderThickness="0" Foreground="{DynamicResource BrushTextPrimary}" />
+                <Button x:Name="NextButton" Content="下一步" Padding="18,6" FontSize="12.5"
                         Margin="8,0,0,0" Cursor="Hand" Click="OnNextClick"
-                        Background="#3B5BA8" BorderThickness="0" Foreground="White" />
+                        Background="{DynamicResource BrushAccent}" BorderThickness="0" Foreground="White" />
             </StackPanel>
         </Grid>
     </Grid>

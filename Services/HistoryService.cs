@@ -23,6 +23,22 @@ public static class HistoryService
     private const int MaxItems = 100;
     private static readonly object Gate = new();
 
+    // 浮窗、输入窗、历史窗都是独立进程，进程内的 lock 挡不住并发写。
+    // 用系统命名互斥量把「读-改-写」串起来，避免两个进程同一时刻互相覆盖、丢记录。
+    private static readonly Mutex CrossProcessGate = new(false, @"Local\QuickTrans_History_v1");
+
+    private static bool EnterCrossProcess()
+    {
+        try { return CrossProcessGate.WaitOne(3000); }
+        catch (AbandonedMutexException) { return true; }   // 上一个持有者被强杀，锁已经归我们
+        catch { return false; }
+    }
+
+    private static void ExitCrossProcess()
+    {
+        try { CrossProcessGate.ReleaseMutex(); } catch { }
+    }
+
     public static string HistoryPath => Path.Combine(AppContext.BaseDirectory, "history.json");
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -35,16 +51,23 @@ public static class HistoryService
     {
         lock (Gate)
         {
-            try
-            {
-                if (!File.Exists(HistoryPath)) return new List<HistoryItem>();
-                var list = JsonSerializer.Deserialize<List<HistoryItem>>(File.ReadAllText(HistoryPath), JsonOpts);
-                return list ?? new List<HistoryItem>();
-            }
-            catch
-            {
-                return new List<HistoryItem>();
-            }
+            var entered = EnterCrossProcess();
+            try { return LoadCore(); }
+            finally { if (entered) ExitCrossProcess(); }
+        }
+    }
+
+    private static List<HistoryItem> LoadCore()
+    {
+        try
+        {
+            if (!File.Exists(HistoryPath)) return new List<HistoryItem>();
+            var list = JsonSerializer.Deserialize<List<HistoryItem>>(File.ReadAllText(HistoryPath), JsonOpts);
+            return list ?? new List<HistoryItem>();
+        }
+        catch
+        {
+            return new List<HistoryItem>();
         }
     }
 
@@ -54,9 +77,10 @@ public static class HistoryService
 
         lock (Gate)
         {
+            var entered = EnterCrossProcess();
             try
             {
-                var list = Load();
+                var list = LoadCore();
 
                 // 避免连续保存完全相同的一条
                 if (list.Count > 0
@@ -86,6 +110,7 @@ public static class HistoryService
                 SaveCore(list);
             }
             catch { /* 写盘失败不影响翻译主流程 */ }
+            finally { if (entered) ExitCrossProcess(); }
         }
     }
 
@@ -93,9 +118,14 @@ public static class HistoryService
     {
         lock (Gate)
         {
-            var list = Load();
-            if (list.RemoveAll(x => string.Equals(x.Id, id, StringComparison.Ordinal)) > 0)
-                SaveCore(list);
+            var entered = EnterCrossProcess();
+            try
+            {
+                var list = LoadCore();
+                if (list.RemoveAll(x => string.Equals(x.Id, id, StringComparison.Ordinal)) > 0)
+                    SaveCore(list);
+            }
+            finally { if (entered) ExitCrossProcess(); }
         }
     }
 
@@ -103,7 +133,9 @@ public static class HistoryService
     {
         lock (Gate)
         {
+            var entered = EnterCrossProcess();
             try { if (File.Exists(HistoryPath)) File.Delete(HistoryPath); } catch { }
+            finally { if (entered) ExitCrossProcess(); }
         }
     }
 

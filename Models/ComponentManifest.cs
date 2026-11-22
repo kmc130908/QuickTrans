@@ -43,6 +43,9 @@ public sealed class ComponentItem
     /// <summary>装好后应存在的文件名，用于判断是否已安装。</summary>
     public string CheckFile { get; set; } = "";
 
+    /// <summary>模型文件名匹配前缀：只要 models 目录（或外部模型）中存在同系列 .gguf（如不同量化 Q4_K_M/Q8_0），也识别为已安装。</summary>
+    public string[] MatchPrefixes { get; set; } = Array.Empty<string>();
+
     public string SizeText => SizeBytes >= 1024L * 1024 * 1024
         ? $"{SizeBytes / 1024.0 / 1024 / 1024:F2} GB"
         : $"{SizeBytes / 1024.0 / 1024:F0} MB";
@@ -65,11 +68,11 @@ public static class DefaultManifest
     private const string EngineRepoBase =
         "https://github.com/kmc130908/QuickTrans/releases/download/v2.0.0";
 
-    // 阿里 ModelScope 的官方仓库，国内直连
+    // 魔搭社区 ModelScope（国内直连高速），选用 Q4_K_M 量化比 Q8_0 缩小约 40% 且划词质量几乎无损
     private const string Qwen06 =
-        "https://modelscope.cn/models/Qwen/Qwen3-0.6B-GGUF/resolve/master/Qwen3-0.6B-Q8_0.gguf";
+        "https://modelscope.cn/models/unsloth/Qwen3-0.6B-GGUF/resolve/master/Qwen3-0.6B-Q4_K_M.gguf";
     private const string Qwen17 =
-        "https://modelscope.cn/models/Qwen/Qwen3-1.7B-GGUF/resolve/master/Qwen3-1.7B-Q8_0.gguf";
+        "https://modelscope.cn/models/unsloth/Qwen3-1.7B-GGUF/resolve/master/Qwen3-1.7B-Q4_K_M.gguf";
 
     public static ComponentManifest Create() => new()
     {
@@ -93,26 +96,28 @@ public static class DefaultManifest
             new()
             {
                 Id = "model-qwen3-06b",
-                Name = "Qwen3-0.6B（609MB，推荐）",
-                Description = "最小的可用模型，阿里官方源国内直连。速度最快，适合看大意。",
+                Name = "Qwen3-0.6B（378MB，最轻快）",
+                Description = "Q4_K_M 精简量化，魔搭国内直连。体积最小、速度最快，适合轻度划词看大意。",
                 Kind = "model",
-                SizeBytes = 609L * 1024 * 1024,
+                SizeBytes = 396_705_472L,
                 Url = Qwen06,
                 Target = "models",
                 ArchiveKind = "none",
-                CheckFile = "Qwen3-0.6B-Q8_0.gguf",
+                CheckFile = "Qwen3-0.6B-Q4_K_M.gguf",
+                MatchPrefixes = new[] { "Qwen3-0.6B" },
             },
             new()
             {
                 Id = "model-qwen3-17b",
-                Name = "Qwen3-1.7B（1.71GB）",
-                Description = "质量明显好于 0.6B，同样走阿里官方源。体积较大，CPU 推理也慢一些。",
+                Name = "Qwen3-1.7B（1.03GB，全能推荐）",
+                Description = "Q4_K_M 量化，魔搭国内直连。兼顾翻译、词典、润色与代码解释，综合能力强。",
                 Kind = "model",
-                SizeBytes = 1749L * 1024 * 1024,
+                SizeBytes = 1_107_409_472L,
                 Url = Qwen17,
                 Target = "models",
                 ArchiveKind = "none",
-                CheckFile = "Qwen3-1.7B-Q8_0.gguf",
+                CheckFile = "Qwen3-1.7B-Q4_K_M.gguf",
+                MatchPrefixes = new[] { "Qwen3-1.7B" },
             },
             new()
             {
@@ -127,6 +132,7 @@ public static class DefaultManifest
                 Target = "models",
                 ArchiveKind = "none",
                 CheckFile = "Hy-MT2-1.8B-Q4_K_M.gguf",
+                MatchPrefixes = new[] { "Hy-MT2-1.8B", "HY-MT1.5-1.8B", "HY-MT-1.8B" },
             },
         },
     };

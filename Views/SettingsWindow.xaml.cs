@@ -15,7 +15,17 @@ public sealed class ModelRow
     public string Subtitle { get; init; } = "";
     public string Badge { get; init; } = "";
     public Visibility BadgeVisibility { get; init; } = Visibility.Collapsed;
+    public Visibility RemoveVisibility { get; init; } = Visibility.Collapsed;
+    public Visibility UseVisibility { get; init; } = Visibility.Visible;
+    public bool IsCustomPath { get; init; }
     public string FilePath { get; init; } = "";
+}
+
+public sealed class ApiProfileRow
+{
+    public string Name { get; init; } = "";
+    public string Subtitle { get; init; } = "";
+    public Visibility ActiveVisibility { get; init; } = Visibility.Collapsed;
 }
 
 public sealed class LangOption
@@ -31,11 +41,14 @@ public partial class SettingsWindow : Window
     private readonly bool _childMode;
     private string? _loadedModelPathOverride;
     private readonly ObservableCollection<ModelRow> _rows = new();
+    private readonly ObservableCollection<ApiProfileRow> _profileRows = new();
     private readonly List<LangOption> _langOptions = new();
     private readonly List<string> _blacklist = new();
     private bool _gpuOk;
     private ThemeManager.Palette _theme = ThemeManager.Light;
     private int _activeTab;
+    private string? _editingProfileName;
+    private bool _creatingNewProfile;
 
     private static readonly string[] Languages =
     {
@@ -62,6 +75,7 @@ public partial class SettingsWindow : Window
         _loadedModelPathOverride = loadedModelPath;
 
         ModelList.ItemsSource = _rows;
+        ApiProfileList.ItemsSource = _profileRows;
 
         LoadUi();
         RefreshModels();
@@ -333,7 +347,7 @@ public partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>按接口类型调整表单。</summary>
+    /// <summary>按接口类型调整表单与指引。</summary>
     private void ApplyApiTypeLayout()
     {
         if (ApiUrlLabel == null || ApiHint == null) return;
@@ -362,15 +376,26 @@ public partial class SettingsWindow : Window
         {
             1 => "格式 appid:密钥，例如 20240101000000000:AbCdEfGhIjKlMnOp",
             2 => "格式 appKey:appSecret",
-            _ => null,
+            _ => "填写对应平台申请的 API Key（通常以 sk- 开头）",
+        };
+
+        ApiKeyHelpLink.Text = idx switch
+        {
+            1 => "前往百度翻译开放平台获取 APP ID 与密钥 →",
+            2 => "前往有道智云控制台获取 appKey 与 appSecret →",
+            _ => "前往获取 API Key（OpenAI 控制台）→",
         };
 
         ApiHint.Text = idx switch
         {
-            1 => "百度翻译不需要 Base URL。控制台能查到 APP ID 和密钥，按「appid:密钥」填在上一栏。",
-            2 => "有道智云按「appKey:appSecret」填在密钥栏，不需要 Base URL。",
-            3 => "谷歌免费端点不需要密钥，但国内直连通常不通，需要系统级代理。",
-            _ => "填任何 OpenAI 兼容接口都行：DeepSeek、智谱、DeepL 代理、公司网关。",
+            1 => "百度翻译不需要 Base URL。在控制台查看 APP ID 与密钥，按「appid:密钥」格式填在上方。",
+            2 => "有道智云不需要 Base URL。在控制台查看应用 ID 与密钥，按「appKey:appSecret」格式填在上方。",
+            3 => "谷歌免费端点不需要密钥，直接命名保存即可；国内直连通常不通，需系统代理。",
+            _ => "支持所有 OpenAI 兼容接口，常见 Base URL 与模型名参考：\n" +
+                 "• DeepSeek：https://api.deepseek.com/v1  ｜  deepseek-chat\n" +
+                 "• 智谱 AI：https://open.bigmodel.cn/api/paas/v4  ｜  glm-4-flash\n" +
+                 "• 通义千问：https://dashscope.aliyuncs.com/compatible-mode/v1  ｜  qwen-turbo\n" +
+                 "• OpenAI：https://api.openai.com/v1  ｜  gpt-4o-mini",
         };
     }
 
@@ -388,14 +413,14 @@ public partial class SettingsWindow : Window
         AutoCloseSecondsBox.Opacity = on ? 1.0 : 0.45;
     }
 
-    /// <summary>打开当前接口类型的密钥申请页。</summary>
+    /// <summary>根据当前下拉框选中的接口类型，打开对应的密钥申请页。</summary>
     private void OnApiKeyHelpClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        var url = _config.ApiType switch
+        var url = ApiTypeBox.SelectedIndex switch
         {
-            "baidu" => "https://fanyi-api.baidu.com/product/11",
-            "youdao" => "https://ai.youdao.com/console/#/service-singleton/text-translation",
-            "google" => "",
+            1 => "https://fanyi-api.baidu.com/product/11",
+            2 => "https://ai.youdao.com/console/#/service-singleton/text-translation",
+            3 => "",
             _ => "https://platform.openai.com/api-keys",
         };
 
@@ -541,20 +566,24 @@ public partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>打开组件管理窗口。</summary>
+    /// <summary>打开模型下载与管理窗口。</summary>
     private void OnOpenComponentsClick(object sender, RoutedEventArgs e)
     {
-        var win = new ComponentWindow(new ComponentManager(AppContext.BaseDirectory))
+        var win = new ComponentWindow(
+            new ComponentManager(AppContext.BaseDirectory),
+            _config.CustomModelPaths,
+            SelectedThemeValue())
         {
             Owner = this,
         };
         win.ShowDialog();
+        RefreshModels();
     }
 
     /// <summary>重新打开首次使用引导教程。</summary>
     private void OnOpenWelcomeClick(object sender, RoutedEventArgs e)
     {
-        var win = new WelcomeWindow
+        var win = new WelcomeWindow(SelectedThemeValue())
         {
             Owner = this,
         };
@@ -594,24 +623,71 @@ public partial class SettingsWindow : Window
         };
     }
 
-    // ---------- 多套接口配置 ----------
+    // ---------- 多套接口配置（可视化列表 + 草稿新建，不保存不落盘） ----------
 
     private bool _loadingProfiles;
+
+    private static string FormatApiTypeLabel(string? type) => type?.ToLowerInvariant() switch
+    {
+        "baidu" => "百度翻译",
+        "youdao" => "有道智云",
+        "google" => "谷歌翻译",
+        _ => "OpenAI 兼容",
+    };
+
+    private static string BuildProfileSubtitle(ApiProfile p)
+    {
+        var label = FormatApiTypeLabel(p.Type);
+        if (string.Equals(p.Type, "openai", StringComparison.OrdinalIgnoreCase))
+        {
+            var extra = !string.IsNullOrWhiteSpace(p.Model) ? p.Model : p.BaseUrl;
+            return string.IsNullOrWhiteSpace(extra) ? label : $"{label} · {extra}";
+        }
+        return label;
+    }
 
     private void RefreshProfileList(string? selectName = null)
     {
         _loadingProfiles = true;
-        var names = _config.ApiProfiles.Select(p => p.Name).ToList();
-        ProfileBox.ItemsSource = names;
+        _profileRows.Clear();
 
-        var target = selectName ?? _config.ActiveProfile;
-        if (!string.IsNullOrEmpty(target) && names.Contains(target))
-            ProfileBox.SelectedItem = target;
+        foreach (var p in _config.ApiProfiles)
+        {
+            var isActive = string.Equals(p.Name, _config.ActiveProfile, StringComparison.Ordinal);
+            _profileRows.Add(new ApiProfileRow
+            {
+                Name = p.Name,
+                Subtitle = BuildProfileSubtitle(p),
+                ActiveVisibility = isActive ? Visibility.Visible : Visibility.Collapsed,
+            });
+        }
 
-        // 名称框跟着选中项走
-        var selected = ProfileBox.SelectedItem as string;
-        ProfileNameBox.Text = _config.ApiProfiles
-            .FirstOrDefault(p => p.Name == selected)?.Name ?? "";
+        ApiProfileEmptyHint.Visibility = _profileRows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        var target = selectName ?? (_creatingNewProfile ? null : _editingProfileName ?? _config.ActiveProfile);
+        var match = !string.IsNullOrEmpty(target)
+            ? _profileRows.FirstOrDefault(r => string.Equals(r.Name, target, StringComparison.Ordinal))
+            : null;
+        ApiProfileList.SelectedItem = match;
+
+        if (!_creatingNewProfile)
+        {
+            if (match != null)
+            {
+                _editingProfileName = match.Name;
+                ApiEditorTitle.Text = $"编辑接口：{match.Name}";
+            }
+            else if (_config.ApiProfiles.Count == 0)
+            {
+                _editingProfileName = null;
+                ApiEditorTitle.Text = "新建接口（填好参数后点右下角「保存」加入列表）";
+            }
+            else
+            {
+                _editingProfileName = null;
+                ApiEditorTitle.Text = "接口配置";
+            }
+        }
 
         _loadingProfiles = false;
     }
@@ -619,87 +695,176 @@ public partial class SettingsWindow : Window
     private void LoadProfileIntoForm(ApiProfile p)
     {
         _loadingProfiles = true;
-        ApiTypeBox.SelectedIndex = p.Type switch
+        _suppressDirty = true;
+        try
         {
-            "baidu" => 1,
-            "youdao" => 2,
-            "google" => 3,
-            _ => 0,
-        };
-        ApiUrlBox.Text = p.BaseUrl;
-        ApiKeyBox.Text = p.ApiKey;
-        ApiModelBox.Text = p.Model;
-        ProfileNameBox.Text = p.Name;
-        _loadingProfiles = false;
-
-        ApplyApiTypeLayout();
+            ApiTypeBox.SelectedIndex = p.Type switch
+            {
+                "baidu" => 1,
+                "youdao" => 2,
+                "google" => 3,
+                _ => 0,
+            };
+            ApiUrlBox.Text = p.BaseUrl;
+            ApiKeyBox.Text = p.ApiKey;
+            ApiModelBox.Text = p.Model;
+            ProfileNameBox.Text = p.Name;
+            ApplyApiTypeLayout();
+        }
+        finally
+        {
+            _suppressDirty = false;
+            _loadingProfiles = false;
+        }
     }
+
+    private string CurrentFormApiType() => ApiTypeBox.SelectedIndex switch
+    {
+        1 => "baidu",
+        2 => "youdao",
+        3 => "google",
+        _ => "openai",
+    };
 
     /// <summary>把表单内容写回配置字段（不含 profiles 列表本身）。</summary>
     private void ApplyFormToConfig()
     {
-        _config.ApiType = ApiTypeBox.SelectedIndex switch
-        {
-            1 => "baidu",
-            2 => "youdao",
-            3 => "google",
-            _ => "openai",
-        };
+        _config.ApiType = CurrentFormApiType();
         _config.ApiBaseUrl = ApiUrlBox.Text.Trim();
         _config.ApiKey = ApiKeyBox.Text.Trim();
         _config.ApiModel = ApiModelBox.Text.Trim();
     }
 
-    private void OnProfileChanged(object sender, SelectionChangedEventArgs e)
+    private void OnProfileListSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingProfiles || _suppressDirty) return;
-        if (ProfileBox.SelectedItem is not string name) return;
+        if (ApiProfileList.SelectedItem is not ApiProfileRow row) return;
 
-        var p = _config.ApiProfiles.FirstOrDefault(x => x.Name == name);
+        var p = _config.ApiProfiles.FirstOrDefault(x => string.Equals(x.Name, row.Name, StringComparison.Ordinal));
         if (p == null) return;
 
+        // 选中已保存接口：放弃未保存的新建草稿，加载该接口到编辑区
+        _creatingNewProfile = false;
+        _editingProfileName = p.Name;
+        ApiEditorTitle.Text = $"编辑接口：{p.Name}";
+        LoadProfileIntoForm(p);
+    }
+
+    private void OnUseProfileRowClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not ApiProfileRow row) return;
+        var p = _config.ApiProfiles.FirstOrDefault(x => string.Equals(x.Name, row.Name, StringComparison.Ordinal));
+        if (p == null) return;
+
+        _creatingNewProfile = false;
+        _editingProfileName = p.Name;
         LoadProfileIntoForm(p);
 
-        // 切换即生效，不用再点保存
-        ApplyFormToConfig();
+        _config.Engine = "api";
         _config.ActiveProfile = p.Name;
+        _config.ApiType = p.Type;
+        _config.ApiBaseUrl = p.BaseUrl;
+        _config.ApiKey = p.ApiKey;
+        _config.ApiModel = p.Model;
+        _suppressDirty = true;
+        try { ApiRadio.IsChecked = true; }
+        finally { _suppressDirty = false; }
+
+        _config.Save();
+        NotifyMainReload();
+        RefreshProfileList(p.Name);
+
+        SetDirty(false);
+        SaveHint.Text = $"✓ 已切换到在线接口「{p.Name}」";
+        SaveHint.Foreground = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0x2E, 0x8B, 0x57));
+        _snapshot = _config.Clone();
+    }
+
+    private void OnDeleteProfileRowClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not ApiProfileRow row) return;
+        var p = _config.ApiProfiles.FirstOrDefault(x => string.Equals(x.Name, row.Name, StringComparison.Ordinal));
+        if (p == null) return;
+
+        _config.ApiProfiles.Remove(p);
+        if (string.Equals(_config.ActiveProfile, p.Name, StringComparison.Ordinal))
+            _config.ActiveProfile = _config.ApiProfiles.FirstOrDefault()?.Name ?? "";
+
+        // 删掉最后一套接口后，顶层 ApiType/ApiKey 仍留着已删除的地址和密钥，
+        // 界面显示空白、翻译却还在用旧配置。这里一并清干净。
+        if (string.IsNullOrWhiteSpace(_config.ActiveProfile))
+        {
+            _config.ApiType = "openai";
+            _config.ApiBaseUrl = "";
+            _config.ApiKey = "";
+            _config.ApiModel = "";
+        }
+        if (string.Equals(_editingProfileName, p.Name, StringComparison.Ordinal))
+            _editingProfileName = null;
+
         _config.Save();
         NotifyMainReload();
 
+        RefreshProfileList();
+        if (_config.ApiProfiles.Count > 0)
+        {
+            var next = _config.ApiProfiles.FirstOrDefault(x => x.Name == _config.ActiveProfile) ?? _config.ApiProfiles[0];
+            _editingProfileName = next.Name;
+            LoadProfileIntoForm(next);
+            RefreshProfileList(next.Name);
+        }
+        else
+        {
+            ClearApiEditorForm("");
+        }
+
         SetDirty(false);
-        SaveHint.Text = $"已切换到「{p.Name}」";
-        SaveHint.Foreground = new System.Windows.Media.SolidColorBrush(
-            System.Windows.Media.Color.FromRgb(0x2E, 0x8B, 0x57));
+        SaveHint.Text = $"已删除「{row.Name}」";
+        _snapshot = _config.Clone();
     }
 
+    private void ClearApiEditorForm(string suggestedName)
+    {
+        _loadingProfiles = true;
+        _suppressDirty = true;
+        try
+        {
+            ProfileNameBox.Text = suggestedName;
+            ApiTypeBox.SelectedIndex = 0;
+            ApiUrlBox.Text = "";
+            ApiKeyBox.Text = "";
+            ApiModelBox.Text = "";
+            ApplyApiTypeLayout();
+        }
+        finally
+        {
+            _suppressDirty = false;
+            _loadingProfiles = false;
+        }
+    }
+
+    /// <summary>
+    /// 进入新建接口草稿状态：绝不提前写入配置列表或落盘，只有用户填完并点「保存」后才真正加入列表。
+    /// </summary>
     private void OnNewProfileClick(object sender, RoutedEventArgs e)
     {
         var n = 1;
         while (_config.ApiProfiles.Any(p => p.Name == $"接口 {n}")) n++;
 
-        var profile = new ApiProfile { Name = $"接口 {n}" };
-        _config.ApiProfiles.Add(profile);
-        _config.Save();
+        _creatingNewProfile = true;
+        _editingProfileName = null;
 
-        RefreshProfileList(profile.Name);
-        LoadProfileIntoForm(profile);
-        SetDirty(false);
-        SaveHint.Text = "已新建，填好后点保存";
-    }
+        _loadingProfiles = true;
+        ApiProfileList.SelectedItem = null;
+        _loadingProfiles = false;
 
-    private void OnDeleteProfileClick(object sender, RoutedEventArgs e)
-    {
-        if (ProfileBox.SelectedItem is not string name) return;
-        var p = _config.ApiProfiles.FirstOrDefault(x => x.Name == name);
-        if (p == null) return;
-
-        _config.ApiProfiles.Remove(p);
-        if (_config.ActiveProfile == p.Name) _config.ActiveProfile = "";
-        _config.Save();
-
-        RefreshProfileList();
-        SetDirty(false);
-        SaveHint.Text = $"已删除「{name}」";
+        ClearApiEditorForm($"接口 {n}");
+        ApiEditorTitle.Text = "新建接口（填好参数后点右下角「保存」加入列表）";
+        SaveHint.Text = "正在新建接口，未点「保存」不会添加到列表";
+        SaveHint.Foreground = ThemeManager.Brush(_theme.TextMuted);
+        ProfileNameBox.Focus();
+        ProfileNameBox.SelectAll();
     }
 
     private bool _dirty;
@@ -855,8 +1020,21 @@ public partial class SettingsWindow : Window
             _config.Save();
         }
 
-        RefreshProfileList();
-        ApplyApiTypeLayout();
+        _creatingNewProfile = false;
+        if (_config.ApiProfiles.Count > 0)
+        {
+            var initial = _config.ApiProfiles.FirstOrDefault(p => p.Name == _config.ActiveProfile)
+                          ?? _config.ApiProfiles[0];
+            _editingProfileName = initial.Name;
+            LoadProfileIntoForm(initial);
+            RefreshProfileList(initial.Name);
+        }
+        else
+        {
+            _editingProfileName = null;
+            RefreshProfileList();
+            ApplyApiTypeLayout();
+        }
 
         // 语音朗读
         TtsEnabledBox.IsChecked = _config.TtsEnabled;
@@ -1020,7 +1198,11 @@ public partial class SettingsWindow : Window
         GpuRadio.IsEnabled = _gpuOk;
         if (!_gpuOk)
         {
-            CpuRadio.IsChecked = true;
+            // 这是程序自己切回 CPU，不是用户改动：不要因此把设置页标成“有未保存的修改”。
+            var prev = _suppressDirty;
+            _suppressDirty = true;
+            try { CpuRadio.IsChecked = true; }
+            finally { _suppressDirty = prev; }
         }
 
         // 纯 CPU 精简版：引擎目录里本来就没有 GPU 后端，不是"检测不到显卡"
@@ -1049,7 +1231,7 @@ public partial class SettingsWindow : Window
     private void RefreshModels(string? highlight = null)
     {
         var current = highlight ?? _config.SelectedModel;
-        var models = _engine.ScanModels();
+        var models = _engine.ScanModels(_config.CustomModelPaths);
         var loadedPath = _childMode ? _loadedModelPathOverride : _engine.LoadedModelPath;
 
         _rows.Clear();
@@ -1068,12 +1250,19 @@ public partial class SettingsWindow : Window
                 ? " · 需腾讯专用内核，本引擎无法加载"
                 : "";
 
+            var loc = m.IsCustomPath
+                ? $" · 外部：{Path.GetDirectoryName(m.FilePath)}"
+                : "";
+
             _rows.Add(new ModelRow
             {
                 DisplayName = m.DisplayName,
-                Subtitle = $"{m.SizeText} · {m.Quant}{note}",
+                Subtitle = $"{m.SizeText} · {m.Quant}{loc}{note}",
                 Badge = badge,
                 BadgeVisibility = string.IsNullOrEmpty(badge) ? Visibility.Collapsed : Visibility.Visible,
+                RemoveVisibility = m.IsCustomPath ? Visibility.Visible : Visibility.Collapsed,
+                UseVisibility = Visibility.Visible,
+                IsCustomPath = m.IsCustomPath,
                 FilePath = m.FilePath,
             });
         }
@@ -1083,7 +1272,8 @@ public partial class SettingsWindow : Window
             _rows.Add(new ModelRow
             {
                 DisplayName = "还没有模型",
-                Subtitle = "把 .gguf 文件放进 models 文件夹，然后点右上角刷新",
+                Subtitle = "点上方「下载模型…」一键下载，或「添加本地模型…」选择电脑任意位置的 .gguf 文件",
+                UseVisibility = Visibility.Collapsed,
             });
         }
     }
@@ -1091,7 +1281,131 @@ public partial class SettingsWindow : Window
     private void OnRefreshClick(object sender, RoutedEventArgs e)
     {
         RefreshModels();
-        SaveHint.Text = $"扫描完成，共 {_engine.ScanModels().Count} 个模型";
+        SaveHint.Text = $"扫描完成，共 {_engine.ScanModels(_config.CustomModelPaths).Count} 个模型";
+    }
+
+    /// <summary>手动选择电脑内任意位置的 .gguf 模型文件，加入自定义模型列表（不复制、不移动原文件）。</summary>
+    private void OnAddCustomModelClick(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选择本地 GGUF 模型文件",
+            Filter = "GGUF 模型文件 (*.gguf)|*.gguf|所有文件 (*.*)|*.*",
+            Multiselect = true,
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog(this) != true || dlg.FileNames.Length == 0) return;
+
+        var added = 0;
+        string? lastErr = null;
+        var modelsDirFull = Path.GetFullPath(_engine.ModelsDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+        foreach (var raw in dlg.FileNames)
+        {
+            var full = Path.GetFullPath(raw);
+            var check = EngineManager.ValidateGgufHeader(full);
+            if (!check.Ok)
+            {
+                lastErr = $"{Path.GetFileName(full)}：{check.Reason}";
+                continue;
+            }
+
+            // 已经在默认 models 目录下的无需重复添加
+            if (full.StartsWith(modelsDirFull, StringComparison.OrdinalIgnoreCase))
+            {
+                added++;
+                continue;
+            }
+
+            if (!_config.CustomModelPaths.Any(p => string.Equals(Path.GetFullPath(p), full, StringComparison.OrdinalIgnoreCase)))
+            {
+                _config.CustomModelPaths.Add(full);
+                added++;
+            }
+        }
+
+        if (added > 0)
+        {
+            AppConfig.Update(c => c.CustomModelPaths = new List<string>(_config.CustomModelPaths));
+            NotifyMainReload();
+            RefreshModels();
+            _snapshot = _config.Clone();
+            SaveHint.Text = lastErr == null
+                ? $"✓ 已添加 {added} 个本地模型，可直接点「使用」加载"
+                : $"已添加 {added} 个模型（部分无效：{lastErr}）";
+            SaveHint.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0x2E, 0x8B, 0x57));
+        }
+        else if (lastErr != null)
+        {
+            SaveHint.Text = "添加失败：" + lastErr;
+            SaveHint.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xC0, 0x39, 0x2B));
+        }
+        else
+        {
+            SaveHint.Text = "所选模型已在列表中";
+        }
+    }
+
+    /// <summary>按需扫描常见模型目录（LM Studio / GPT4All / 下载文件夹 / 缓存），零常驻占用。</summary>
+    private async void OnAutoScanModelsClick(object sender, RoutedEventArgs e)
+    {
+        AutoScanModelsButton.IsEnabled = false;
+        SaveHint.Text = "正在扫描常见模型目录…";
+        try
+        {
+            var modelsDir = _engine.ModelsDir;
+            var existing = _config.CustomModelPaths.ToList();
+            var found = await Task.Run(() => EngineManager.DiscoverCommonModels(modelsDir, existing));
+
+            if (found.Count == 0)
+            {
+                SaveHint.Text = "常见目录中未发现新的 .gguf 模型（可点「添加模型…」手动选择）";
+                SaveHint.Foreground = ThemeManager.Brush(_theme.TextMuted);
+                return;
+            }
+
+            foreach (var p in found)
+            {
+                if (!_config.CustomModelPaths.Any(x => string.Equals(Path.GetFullPath(x), Path.GetFullPath(p), StringComparison.OrdinalIgnoreCase)))
+                    _config.CustomModelPaths.Add(p);
+            }
+
+            AppConfig.Update(c => c.CustomModelPaths = new List<string>(_config.CustomModelPaths));
+            NotifyMainReload();
+            RefreshModels();
+            _snapshot = _config.Clone();
+
+            SaveHint.Text = $"✓ 自动扫描新增 {found.Count} 个本地模型";
+            SaveHint.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0x2E, 0x8B, 0x57));
+        }
+        catch (Exception ex)
+        {
+            SaveHint.Text = "扫描出错：" + ex.Message;
+        }
+        finally
+        {
+            AutoScanModelsButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>仅从自定义列表中移除外部模型记录，不删除硬盘上的模型文件。</summary>
+    private void OnRemoveCustomModelClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not ModelRow row || !row.IsCustomPath) return;
+
+        var removed = _config.CustomModelPaths.RemoveAll(p =>
+            string.Equals(Path.GetFullPath(p), Path.GetFullPath(row.FilePath), StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+        {
+            AppConfig.Update(c => c.CustomModelPaths = new List<string>(_config.CustomModelPaths));
+            NotifyMainReload();
+            RefreshModels();
+            _snapshot = _config.Clone();
+            SaveHint.Text = $"已从列表移除「{row.DisplayName}」（原文件未删除）";
+        }
     }
 
     private void OnOpenModelsFolder(object sender, RoutedEventArgs e)
@@ -1123,8 +1437,13 @@ public partial class SettingsWindow : Window
         {
             if (_childMode)
             {
-                // 通知主进程加载模型，由主进程持有 llama-server（关掉设置页后模型继续可用）
-                _config.Save();
+                // 通知主进程加载模型，由主进程持有 llama-server（关掉设置页后模型继续可用）。
+                // 只回写模型相关字段，避免把别处刚保存的设置整份覆盖。
+                AppConfig.Update(c =>
+                {
+                    c.SelectedModel = row.DisplayName;
+                    c.Engine = "local";
+                });
                 var reply = await AppIpcClient.SendAsync("LOAD_MODEL\t" + row.FilePath, connectTimeoutMs: 2000);
                 if (reply != null && reply.StartsWith("OK\t", StringComparison.Ordinal))
                 {
@@ -1209,12 +1528,41 @@ public partial class SettingsWindow : Window
 
     private void OnSaveClick(object sender, RoutedEventArgs e)
     {
-        // 名称查重放在最前面，免得后面写了一半才发现冲突
+        // 判断当前接口表单是在编辑已有配置，还是提交新建草稿
         var nameInput = ProfileNameBox.Text?.Trim() ?? "";
-        if (ProfileBox.SelectedItem is string currentName && !string.IsNullOrEmpty(nameInput))
+        var formType = CurrentFormApiType();
+        var formUrl = ApiUrlBox.Text.Trim();
+        var formKey = ApiKeyBox.Text.Trim();
+        var formModel = ApiModelBox.Text.Trim();
+        var formHasContent = formType == "google"
+            ? (!string.IsNullOrWhiteSpace(nameInput) && (_creatingNewProfile || _activeTab == 2))
+            : (!string.IsNullOrWhiteSpace(formUrl) || !string.IsNullOrWhiteSpace(formKey));
+
+        var shouldCreateProfile = (_creatingNewProfile || _editingProfileName == null) && formHasContent;
+
+        // 名称查重放在最前面，免得后面写了一半才发现冲突
+        if (shouldCreateProfile)
+        {
+            if (string.IsNullOrWhiteSpace(nameInput))
+            {
+                var n = 1;
+                while (_config.ApiProfiles.Any(p => p.Name == $"接口 {n}")) n++;
+                nameInput = $"接口 {n}";
+            }
+            var duplicated = _config.ApiProfiles
+                .Any(p => string.Equals(p.Name, nameInput, StringComparison.Ordinal));
+            if (duplicated)
+            {
+                SaveHint.Text = $"名称「{nameInput}」已经被另一套接口占用，请换一个名称";
+                SaveHint.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xC0, 0x39, 0x2B));
+                return;
+            }
+        }
+        else if (_editingProfileName != null && !string.IsNullOrEmpty(nameInput))
         {
             var duplicated = _config.ApiProfiles
-                .Any(p => !string.Equals(p.Name, currentName, StringComparison.Ordinal)
+                .Any(p => !string.Equals(p.Name, _editingProfileName, StringComparison.Ordinal)
                           && string.Equals(p.Name, nameInput, StringComparison.Ordinal));
             if (duplicated)
             {
@@ -1264,33 +1612,53 @@ public partial class SettingsWindow : Window
         _config.Theme = SelectedThemeValue();
         _config.Engine = ApiRadio.IsChecked == true ? "api" : "local";
 
-        ApplyFormToConfig();
-
-        // 把改动写回当前选中的那套配置
-        if (ProfileBox.SelectedItem is string activeName)
+        if (shouldCreateProfile)
         {
-            var active = _config.ApiProfiles.FirstOrDefault(p => p.Name == activeName);
+            var created = new ApiProfile
+            {
+                Name = nameInput,
+                Type = formType,
+                BaseUrl = formUrl,
+                ApiKey = formKey,
+                Model = formModel,
+            };
+            _config.ApiProfiles.Add(created);
+            _config.ActiveProfile = created.Name;
+            ApplyFormToConfig();
+            _creatingNewProfile = false;
+            _editingProfileName = created.Name;
+            RefreshProfileList(created.Name);
+        }
+        else if (_editingProfileName != null)
+        {
+            var active = _config.ApiProfiles.FirstOrDefault(p => p.Name == _editingProfileName);
             if (active != null)
             {
-                active.Type = _config.ApiType;
-                active.BaseUrl = _config.ApiBaseUrl;
-                active.ApiKey = _config.ApiKey;
-                active.Model = _config.ApiModel;
+                active.Type = formType;
+                active.BaseUrl = formUrl;
+                active.ApiKey = formKey;
+                active.Model = formModel;
 
-                // 名称改了就当重命名处理
-                var renamed = !string.IsNullOrEmpty(nameInput) &&
-                              !string.Equals(active.Name, nameInput, StringComparison.Ordinal);
+                var renamed = !string.IsNullOrEmpty(nameInput)
+                              && !string.Equals(active.Name, nameInput, StringComparison.Ordinal);
                 if (renamed) active.Name = nameInput;
 
-                _config.ActiveProfile = active.Name;
-
-                if (renamed)
+                if (string.Equals(_config.ActiveProfile, _editingProfileName, StringComparison.Ordinal)
+                    || string.IsNullOrWhiteSpace(_config.ActiveProfile))
                 {
-                    _loadingProfiles = true;
-                    RefreshProfileList(active.Name);
-                    _loadingProfiles = false;
+                    _config.ActiveProfile = active.Name;
+                    ApplyFormToConfig();
                 }
+
+                _editingProfileName = active.Name;
+                RefreshProfileList(active.Name);
             }
+        }
+        else if (_creatingNewProfile)
+        {
+            // 点了新建但没填任何内容：自动放弃空白草稿，不污染已保存接口列表
+            _creatingNewProfile = false;
+            RefreshProfileList();
         }
 
         _config.TargetLanguage = LanguageBox.SelectedItem as string ?? "简体中文";
@@ -1322,10 +1690,20 @@ public partial class SettingsWindow : Window
         if (EngineVariantPanel.Visibility == Visibility.Visible)
             _config.EngineVariant = EngineVariantBox.SelectedIndex == 1 ? "cpu" : "gpu";
 
-        var deviceChanged = _config.UseGpu != (GpuRadio.IsChecked == true);
-        _config.UseGpu = DevicePanel.Visibility == Visibility.Visible
-            ? GpuRadio.IsChecked == true
-            : false;
+        var oldUseGpu = _config.UseGpu;
+        if (DevicePanel.Visibility == Visibility.Visible)
+        {
+            _config.UseGpu = GpuRadio.IsChecked == true;
+        }
+        else if (!EngineManager.HasGpuBackend(_engine.EngineDir))
+        {
+            // 纯 CPU 引擎：确实没有 GPU 可用
+            _config.UseGpu = false;
+        }
+        // 其它情况（引擎带 GPU 后端、只是本次探测失败/超时）保留原值，
+        // 避免一次探测失败就把 GPU 永久关掉。
+
+        var deviceChanged = _config.UseGpu != oldUseGpu;
 
         var gi = GrabModeBox.SelectedIndex;
         _config.GrabMode = gi >= 0 && gi < GrabModes.Length ? GrabModes[gi].Value : "auto";

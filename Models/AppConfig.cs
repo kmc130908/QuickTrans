@@ -46,8 +46,11 @@ public sealed class AppConfig
     /// <summary>翻译通道：local = 本地模型，api = 自定义在线接口。</summary>
     public string Engine { get; set; } = "local";
 
-    /// <summary>当前选中的本地模型文件名（models 目录下的 .gguf）。</summary>
+    /// <summary>当前选中的本地模型文件名（models 目录下的 .gguf，或自定义路径模型名）。</summary>
     public string SelectedModel { get; set; } = "";
+
+    /// <summary>用户手动添加的外部 .gguf 模型完整路径（可位于电脑任意目录）。</summary>
+    public List<string> CustomModelPaths { get; set; } = new();
 
     /// <summary>卸载到 GPU 的层数，999 表示全部。</summary>
     public int GpuLayers { get; set; } = 999;
@@ -168,39 +171,147 @@ public sealed class AppConfig
 
     public static AppConfig Load()
     {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (!File.Exists(ConfigPath))
+                {
+                    var created = new AppConfig();
+                    created.Save();
+                    return created;
+                }
+
+                var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(ConfigPath), JsonOpts);
+                if (cfg == null) break;   // 空文件，按损坏处理
+                Normalize(cfg);
+                return cfg;
+            }
+            catch (IOException)
+            {
+                // 另一个进程正在写配置：等它写完再读。
+                // 不能把“读不到”当成“配置损坏”，否则下一步写默认值就把用户设置覆盖了。
+                if (attempt == 4) return new AppConfig();
+                Thread.Sleep(30);
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        BackupCorruptConfig();
+        return new AppConfig();
+    }
+
+    private static void Normalize(AppConfig cfg)
+    {
+        if (cfg.QuickLanguages == null || cfg.QuickLanguages.Count == 0)
+            cfg.QuickLanguages = new List<string> { "简体中文", "英语", "日语", "韩语" };
+        cfg.DndBlacklistProcesses ??= new List<string>();
+        cfg.CustomModelPaths ??= new List<string>();
+        cfg.ApiProfiles ??= new List<ApiProfile>();
+        cfg.SyncActiveProfileToTopLevel();
+    }
+
+    /// <summary>
+    /// 配置读不出来时先留一份现场再返回默认值：方便排查，也避免后续保存把原文件彻底覆盖掉。
+    /// </summary>
+    private static void BackupCorruptConfig()
+    {
         try
         {
             if (File.Exists(ConfigPath))
-            {
-                var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(ConfigPath), JsonOpts);
-                if (cfg != null)
-                {
-                    if (cfg.QuickLanguages == null || cfg.QuickLanguages.Count == 0)
-                        cfg.QuickLanguages = new List<string> { "简体中文", "英语", "日语", "韩语" };
-                    cfg.DndBlacklistProcesses ??= new List<string>();
-                    return cfg;
-                }
-            }
+                File.Copy(ConfigPath, ConfigPath + ".bad", overwrite: true);
         }
-        catch
-        {
-            // 配置损坏时用默认值启动，不把用户挡在门外
-        }
+        catch { }
+    }
 
-        var fresh = new AppConfig();
-        fresh.Save();
-        return fresh;
+    /// <summary>
+    /// 保证顶层 ApiType / ApiBaseUrl / ApiKey / ApiModel 始终与当前 ActiveProfile 保持一致，
+    /// 避免切换或保存配置后出现“界面显示百度翻译、底层仍用旧 OpenAI 地址”的错位。
+    /// </summary>
+    public void SyncActiveProfileToTopLevel()
+    {
+        if (string.IsNullOrWhiteSpace(ActiveProfile) || ApiProfiles == null || ApiProfiles.Count == 0)
+            return;
+
+        var active = ApiProfiles.FirstOrDefault(p =>
+            string.Equals(p.Name, ActiveProfile, StringComparison.Ordinal));
+        if (active == null) return;
+
+        ApiType = string.IsNullOrWhiteSpace(active.Type) ? "openai" : active.Type;
+        ApiBaseUrl = active.BaseUrl ?? "";
+        ApiKey = active.ApiKey ?? "";
+        ApiModel = active.Model ?? "";
     }
 
     public void Save()
     {
-        try
+        SyncActiveProfileToTopLevel();
+        var json = JsonSerializer.Serialize(this, JsonOpts);
+
+        // 先写临时文件再整体替换：写到一半崩溃/断电不会留下半个 JSON，
+        // 其它进程也不会读到只写了一半的配置。
+        var tmp = ConfigPath + ".tmp";
+        for (var attempt = 0; attempt < 5; attempt++)
         {
-            File.WriteAllText(ConfigPath, JsonSerializer.Serialize(this, JsonOpts));
+            try
+            {
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, ConfigPath, overwrite: true);
+                return;
+            }
+            catch (IOException)
+            {
+                // 目标文件正好被另一个进程读着：稍等重试
+                Thread.Sleep(30);
+            }
+            catch
+            {
+                break;   // 目录只读等情况，静默失败
+            }
         }
-        catch
+
+        try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+    }
+
+    /// <summary>
+    /// 只改一个/几个字段的“读-改-写”：先读磁盘上的最新配置，再覆盖指定字段。
+    /// 子进程（浮窗、设置页）内存里的配置可能是几分钟前加载的，直接整份 Save
+    /// 会把别处刚保存的设置盖掉，所以单字段修改统一走这里。
+    /// </summary>
+    public static void Update(Action<AppConfig> mutate)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            // 目录只读等情况下静默失败
+            try
+            {
+                AppConfig latest;
+                if (File.Exists(ConfigPath))
+                {
+                    var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(ConfigPath), JsonOpts);
+                    if (cfg == null) return;   // 文件损坏：宁可不写，也不要用默认值覆盖
+                    Normalize(cfg);
+                    latest = cfg;
+                }
+                else
+                {
+                    latest = new AppConfig();
+                }
+
+                mutate(latest);
+                latest.Save();
+                return;
+            }
+            catch (IOException)
+            {
+                Thread.Sleep(30);
+            }
+            catch
+            {
+                return;
+            }
         }
     }
 
@@ -218,7 +329,19 @@ public sealed class AppConfig
                      System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
         {
             if (!prop.CanWrite) continue;
-            try { prop.SetValue(this, prop.GetValue(source)); }
+            try
+            {
+                var value = prop.GetValue(source);
+                // 列表要复制一份：直接把快照里的 List 引用挂过来，
+                // 之后删接口/改语言会连快照一起改掉，点「取消」就恢复不回去了。
+                value = value switch
+                {
+                    List<string> list => new List<string>(list),
+                    List<ApiProfile> profiles => profiles.Select(p => p.Clone()).ToList(),
+                    _ => value,
+                };
+                prop.SetValue(this, value);
+            }
             catch { /* 个别只读计算属性跳过 */ }
         }
     }

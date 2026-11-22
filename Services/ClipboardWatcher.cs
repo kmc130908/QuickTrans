@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using WinForms = System.Windows.Forms;
 
@@ -100,7 +101,9 @@ public sealed class ClipboardWatcher : IDisposable
         if (fg != IntPtr.Zero)
         {
             GetWindowThreadProcessId(fg, out var pid);
-            if (pid == _selfPid) return;
+            // 设置页、历史窗跑在独立子进程里，pid 和主进程不同，但同样是“自己”。
+            // 只比对 _selfPid 的话，在历史窗里点两次「复制」会被当成连按两次 Ctrl+C。
+            if (pid == _selfPid || IsOwnProcess(pid)) return;
         }
 
         var text = TextGrabber.TryReadClipboardText()?.Trim();
@@ -119,6 +122,20 @@ public sealed class ClipboardWatcher : IDisposable
 
         _lastTick = now;
         _lastText = text;
+    }
+
+    /// <summary>设置页 / 历史窗 / 浮窗等子进程也属于本软件。</summary>
+    private static bool IsOwnProcess(uint pid)
+    {
+        try
+        {
+            using var p = Process.GetProcessById((int)pid);
+            return string.Equals(p.ProcessName, "QuickTrans", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public void Dispose()

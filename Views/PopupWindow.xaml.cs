@@ -62,6 +62,32 @@ public partial class PopupWindow : Window
     [DllImport("imm32.dll")]
     private static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
 
+    // ---- Esc 关闭 ----
+    // 浮窗是 WS_EX_NOACTIVATE，永远不会拿到键盘焦点，OnKeyDown 收不到 Esc。
+    // 用低级键盘钩子只“观察”Esc、不拦截（始终 CallNextHookEx），
+    // 因此不会影响其它程序的 Esc 行为，只关闭当前浮窗。
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_SYSKEYDOWN = 0x0104;
+    private const int VK_ESCAPE = 0x1B;
+
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandle(string? lpModuleName);
+
+    private readonly LowLevelKeyboardProc _escHookProc;
+    private IntPtr _escHook = IntPtr.Zero;
+
     private IntPtr _savedImc = IntPtr.Zero;
     private bool _imeDetached;
 
@@ -177,6 +203,7 @@ public partial class PopupWindow : Window
     public PopupWindow()
     {
         InitializeComponent();
+        _escHookProc = EscapeHookProc;
 
         _autoCloseTimer = new DispatcherTimer
         {
@@ -221,11 +248,17 @@ public partial class PopupWindow : Window
         MouseEnter += (_, _) => _autoCloseTimer.Stop();
 
         SourceInitialized += OnSourceInitialized;
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) InstallEscapeHook();
+            else UninstallEscapeHook();
+        };
         Loaded += (_, _) => { Reposition(true); _positioned = true; };
         SizeChanged += (_, _) => { if (_positioned && !_userMoved) Reposition(); };
         Closed += (_, _) =>
         {
             _closed = true;
+            UninstallEscapeHook();
             _autoCloseTimer.Stop();
             _foregroundCheckTimer.Stop();
             _timedCloseTimer.Stop();
@@ -1176,12 +1209,65 @@ public partial class PopupWindow : Window
         SpeakButton.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void OnCopyClick(object sender, RoutedEventArgs e)
+    private void InstallEscapeHook()
+    {
+        if (_escHook != IntPtr.Zero || _closed) return;
+        try
+        {
+            _escHook = SetWindowsHookEx(WH_KEYBOARD_LL, _escHookProc, GetModuleHandle(null), 0);
+        }
+        catch
+        {
+            _escHook = IntPtr.Zero;
+        }
+    }
+
+    private void UninstallEscapeHook()
+    {
+        if (_escHook == IntPtr.Zero) return;
+        try { UnhookWindowsHookEx(_escHook); } catch { }
+        _escHook = IntPtr.Zero;
+    }
+
+    private IntPtr EscapeHookProc(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        try
+        {
+            if (nCode >= 0
+                && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)
+                && Marshal.ReadInt32(lParam) == VK_ESCAPE
+                && IsVisible
+                && !_closed)
+            {
+                var fg = GetForegroundWindow();
+                // 设置页/历史窗在前台时，Esc 属于它们，不关闭浮窗
+                if (fg != _settingsHwnd && fg != _historyHwnd)
+                {
+                    Dispatcher.BeginInvoke(
+                        new Action(() => { if (IsVisible && !_closed) Close(); }),
+                        DispatcherPriority.Input);
+                }
+            }
+        }
+        catch
+        {
+            // 钩子回调绝不能抛异常：系统会直接把钩子摘掉
+        }
+
+        // 只观察、不拦截：Esc 仍然会正常传给其它程序
+        return CallNextHookEx(_escHook, nCode, wParam, lParam);
+    }
+
+    private async void OnCopyClick(object sender, RoutedEventArgs e)
     {
         if (!_hasResult) return;
         try
         {
             QuickTrans.Services.ClipboardWatcher.SuppressFor(700);
+            // 子进程里的 SuppressFor 只作用于自己，必须等主进程确认已跳过这次写入；
+            // 否则快速点两次「复制」会被主进程当成连按两次 Ctrl+C，反过来触发翻译。
+            try { await QuickTrans.Services.AppIpcClient.SendAsync("SUPPRESS_CLIPBOARD\t1200", connectTimeoutMs: 400); }
+            catch { }
             Clipboard.SetText(ResultText.Text);
             StatusText.Text = "已复制";
         }

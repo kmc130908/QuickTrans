@@ -127,6 +127,10 @@ public static class TextGrabber
     /// <summary>取字时的来源窗口句柄（前台窗口）。用于浮窗只对它置顶。</summary>
     public static IntPtr LastSourceHwnd { get; private set; }
 
+    // 每次取词递增。UIA 超时后那个后台任务还在跑，回来时不能把上一次的选区
+    // 写进静态字段，否则会污染下一次浮窗的贴边位置。
+    private static int _grabGeneration;
+
     /// <summary>控制台类窗口，Ctrl+C 会触发中断，必须排除。</summary>
     private static readonly string[] ConsoleClasses =
     {
@@ -142,6 +146,7 @@ public static class TextGrabber
         mode ??= "auto";
         LastSelectionRect = null;
         LastSourceHwnd = GetForegroundWindow();
+        var generation = Interlocked.Increment(ref _grabGeneration);
 
         if (!string.Equals(mode, "clipboard", StringComparison.OrdinalIgnoreCase))
         {
@@ -152,7 +157,7 @@ public static class TextGrabber
             try
             {
                 var uiaSw = Stopwatch.StartNew();
-                var task = Task.Run(TryUia);
+                var task = Task.Run(() => TryUia(generation));
                 if (task.Wait(800)) viaUia = task.Result;
                 else LastMethod = "UIA 超时";
                 App.Log($"  uia: {uiaSw.ElapsedMilliseconds}ms result={(viaUia?.Length ?? 0)}");
@@ -181,7 +186,7 @@ public static class TextGrabber
         return viaClip;
     }
 
-    private static string? TryUia()
+    private static string? TryUia(int generation)
     {
         try
         {
@@ -250,7 +255,10 @@ public static class TextGrabber
                 catch { /* 某些控件不支持取边界矩形 */ }
             }
 
-            LastSelectionRect = hasRect ? union : null;
+            // 这次取词已经结束（多半是 UIA 超时后走的剪贴板）：不要再把迟到的
+            // 选区写进静态字段，覆盖掉别的取词结果。
+            if (generation == Volatile.Read(ref _grabGeneration))
+                LastSelectionRect = hasRect ? union : null;
 
             var text = sb.ToString().Trim();
             return string.IsNullOrWhiteSpace(text) ? null : text;
@@ -513,6 +521,10 @@ public static class TextGrabber
         try
         {
             ClipboardWatcher.SuppressFor(1200);
+            // 替换粘贴发生在浮窗子进程里，本进程的 SuppressFor 管不到主进程的剪贴板监听，
+            // 必须等主进程确认已跳过这次写入（否则可能误判为连按两次 Ctrl+C）。
+            try { AppIpcClient.SendAsync("SUPPRESS_CLIPBOARD\t1600", connectTimeoutMs: 400).GetAwaiter().GetResult(); }
+            catch { }
             if (!SetClipboardTextFast(text)) return false;
 
             if (GetForegroundWindow() != targetHwnd)

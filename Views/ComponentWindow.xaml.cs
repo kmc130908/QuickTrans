@@ -8,87 +8,83 @@ using QuickTrans.Services;
 namespace QuickTrans.Views;
 
 /// <summary>
-/// 组件管理：列出可下载的 GPU 引擎和模型，支持下载、删除、查看进度。
-/// 首次启动发现缺组件时也会自动打开。
+/// 模型下载与管理：列出推荐下载的离线翻译模型，自动识别 models 目录及自定义路径中已有的同系列模型，
+/// 支持断点续传、SHA256/GGUF 完整性校验与删除。
 /// </summary>
 public partial class ComponentWindow : Window
 {
     private readonly ComponentManager _manager;
     private readonly ComponentManifest _manifest;
+    private readonly List<string> _extraModelPaths;
+    private readonly ThemeManager.Palette _theme;
     private readonly Dictionary<string, ProgressBar> _bars = new();
     private readonly Dictionary<string, Button> _buttons = new();
     private readonly Dictionary<string, TextBlock> _states = new();
 
-    public ComponentWindow(ComponentManager manager)
+    public ComponentWindow(ComponentManager manager, IEnumerable<string>? extraModelPaths = null, string? themeSetting = null)
     {
         InitializeComponent();
         _manager = manager;
         _manifest = DefaultManifest.Create();
 
-        // 根据当前内置引擎调整说明：Vulkan 版已自带三家显卡 GPU 加速
-        var backend = EngineManager.GetGpuBackendKind(_manager.EngineDir);
-        if (string.Equals(backend, "Vulkan", StringComparison.OrdinalIgnoreCase))
-        {
-            HintText.Text = "当前已安装 Vulkan 通用 GPU 引擎（支持 NVIDIA / AMD / Intel 显卡加速并自带 CPU 兜底）。模型体积较大未内置，可按需在下方下载。";
-        }
-        else if (string.Equals(backend, "CUDA", StringComparison.OrdinalIgnoreCase))
-        {
-            HintText.Text = "当前已内置 CUDA GPU 引擎（也可按需换装更轻量的 Vulkan 引擎）。翻译模型体积较大未内置，可按需在下方下载。";
-        }
-        else
-        {
-            HintText.Text = "当前为精简 CPU 引擎。可一键下载仅 31MB 的 Vulkan 通用 GPU 加速引擎及翻译模型。";
-        }
+        var cfg = AppConfig.Load();
+        _extraModelPaths = (extraModelPaths ?? cfg.CustomModelPaths ?? new List<string>()).ToList();
+        _theme = ThemeManager.Resolve(themeSetting ?? cfg.Theme);
 
+        // 当前版本统一内置 Vulkan + CPU 通用引擎，无需再向用户展示引擎下载管理项
+        _manifest.Components.RemoveAll(c => string.Equals(c.Kind, "engine", StringComparison.OrdinalIgnoreCase));
+
+        ApplyTheme();
         BuildList();
     }
 
     /// <summary>
-    /// 安装向导里勾选了「下载 GPU 引擎 / 模型」时，由 App 带参数启动本窗口，
-    /// 构造时传入组件 id，窗口显示后自动开始下载。
+    /// 安装向导里勾选了要下载的模型时，由 App 带参数启动本窗口，显示后自动开始下载。
     /// </summary>
-    public ComponentWindow(ComponentManager manager, string[] autoStartIds) : this(manager)
+    public ComponentWindow(ComponentManager manager, string[] autoStartIds, IEnumerable<string>? extraModelPaths = null, string? themeSetting = null)
+        : this(manager, extraModelPaths, themeSetting)
     {
         if (autoStartIds.Length == 0) return;
 
         Loaded += async (_, _) =>
         {
-            foreach (var rawId in autoStartIds)
+            foreach (var id in autoStartIds)
             {
-                // 兼容老版安装向导传入的 engine-cuda，自动映射到新版 Vulkan 引擎
-                var id = string.Equals(rawId, "engine-cuda", StringComparison.OrdinalIgnoreCase)
-                    ? "engine-vulkan"
-                    : rawId;
                 var item = _manifest.Components.FirstOrDefault(c =>
                     string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase));
-                if (item == null || _manager.IsInstalled(item)) continue;
+                if (item == null || _manager.IsInstalled(item, _extraModelPaths)) continue;
 
                 await ToggleAsync(item);
             }
         };
     }
 
+    private void ApplyTheme()
+    {
+        Background = ThemeManager.Brush(_theme.WindowBg);
+        TitleText.Foreground = ThemeManager.Brush(_theme.TextPrimary);
+        HintText.Foreground = ThemeManager.Brush(_theme.TextSecondary);
+        FooterBorder.Background = ThemeManager.Brush(_theme.WindowBg);
+        StatusText.Foreground = ThemeManager.Brush(_theme.TextMuted);
+        CloseBtn.Background = ThemeManager.Brush(_theme.PillBg);
+        CloseBtn.Foreground = ThemeManager.Brush(_theme.TextPrimary);
+    }
+
     private void BuildList()
     {
         ListPanel.Children.Clear();
 
-        foreach (var group in _manifest.Components.GroupBy(c => c.Kind))
+        ListPanel.Children.Add(new TextBlock
         {
-            var title = group.Key == "engine" ? "推理引擎" : "翻译模型";
-            ListPanel.Children.Add(new TextBlock
-            {
-                Text = title,
-                FontSize = 13,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x5A, 0x5A, 0x64)),
-                Margin = new Thickness(2, 6, 0, 8),
-            });
+            Text = "推荐离线翻译模型",
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = ThemeManager.Brush(_theme.TextSecondary),
+            Margin = new Thickness(2, 4, 0, 8),
+        });
 
-            foreach (var item in group)
-                ListPanel.Children.Add(BuildCard(item));
-
-            ListPanel.Children.Add(new Border { Height = 10 });
-        }
+        foreach (var item in _manifest.Components)
+            ListPanel.Children.Add(BuildCard(item));
 
         RefreshStates();
     }
@@ -106,14 +102,14 @@ public partial class ComponentWindow : Window
             Text = item.Name,
             FontSize = 13.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1E)),
+            Foreground = ThemeManager.Brush(_theme.TextPrimary),
             VerticalAlignment = VerticalAlignment.Center,
         });
         nameRow.Children.Add(new TextBlock
         {
             Text = item.SizeText,
             FontSize = 11,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x8A, 0x8A, 0x93)),
+            Foreground = ThemeManager.Brush(_theme.TextMuted),
             Margin = new Thickness(8, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
         });
@@ -123,7 +119,7 @@ public partial class ComponentWindow : Window
         {
             Text = item.Description,
             FontSize = 11.5,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x6B, 0x75)),
+            Foreground = ThemeManager.Brush(_theme.TextSecondary),
             Margin = new Thickness(0, 5, 0, 0),
             TextWrapping = TextWrapping.Wrap,
         });
@@ -131,7 +127,7 @@ public partial class ComponentWindow : Window
         var state = new TextBlock
         {
             FontSize = 11,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x8A, 0x8A, 0x93)),
+            Foreground = ThemeManager.Brush(_theme.TextMuted),
             Margin = new Thickness(0, 6, 0, 0),
             TextWrapping = TextWrapping.Wrap,
         };
@@ -145,8 +141,8 @@ public partial class ComponentWindow : Window
             Minimum = 0,
             Maximum = 100,
             Visibility = Visibility.Collapsed,
-            Background = new SolidColorBrush(Color.FromRgb(0xE4, 0xE4, 0xEA)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0x3B, 0x5B, 0xA8)),
+            Background = ThemeManager.Brush(_theme.Border),
+            Foreground = ThemeManager.Brush(_theme.Accent),
         };
         left.Children.Add(bar);
         _bars[item.Id] = bar;
@@ -161,7 +157,7 @@ public partial class ComponentWindow : Window
             FontSize = 12,
             Cursor = System.Windows.Input.Cursors.Hand,
             BorderThickness = new Thickness(0),
-            Background = new SolidColorBrush(Color.FromRgb(0x3B, 0x5B, 0xA8)),
+            Background = ThemeManager.Brush(_theme.Accent),
             Foreground = Brushes.White,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(14, 0, 0, 0),
@@ -174,10 +170,12 @@ public partial class ComponentWindow : Window
 
         return new Border
         {
-            Background = Brushes.White,
-            CornerRadius = new CornerRadius(8),
+            Background = ThemeManager.Brush(_theme.CardBg),
+            BorderBrush = ThemeManager.Brush(_theme.Border),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
             Padding = new Thickness(14, 12, 14, 12),
-            Margin = new Thickness(0, 0, 0, 8),
+            Margin = new Thickness(0, 0, 0, 10),
             Child = grid,
         };
     }
@@ -186,36 +184,73 @@ public partial class ComponentWindow : Window
     {
         foreach (var item in _manifest.Components)
         {
-            var installed = _manager.IsInstalled(item);
+            var matched = _manager.FindInstalledFile(item, _extraModelPaths);
+            var installed = matched != null;
+            var insideModels = matched != null && _manager.IsInsideModelsDir(matched);
+
             if (_buttons.TryGetValue(item.Id, out var button))
             {
-                button.Content = installed ? "删除" : "下载";
-                button.Background = new SolidColorBrush(installed
-                    ? Color.FromRgb(0xF2, 0xF2, 0xF5)
-                    : Color.FromRgb(0x3B, 0x5B, 0xA8));
-                button.Foreground = installed
-                    ? new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x44))
-                    : Brushes.White;
+                if (installed && insideModels)
+                {
+                    button.Content = "删除";
+                    button.IsEnabled = true;
+                    button.Background = ThemeManager.Brush(_theme.PillBg);
+                    button.Foreground = ThemeManager.Brush(_theme.TextPrimary);
+                }
+                else if (installed)
+                {
+                    button.Content = "已存在";
+                    button.IsEnabled = false;
+                    button.Background = ThemeManager.Brush(_theme.PillBg);
+                    button.Foreground = ThemeManager.Brush(_theme.TextMuted);
+                }
+                else
+                {
+                    button.Content = "下载";
+                    button.IsEnabled = true;
+                    button.Background = ThemeManager.Brush(_theme.Accent);
+                    button.Foreground = Brushes.White;
+                }
             }
 
             if (_states.TryGetValue(item.Id, out var state))
-                state.Text = installed ? "✓ 已安装" : "未安装";
+            {
+                if (!installed)
+                {
+                    state.Text = "未安装";
+                    state.Foreground = ThemeManager.Brush(_theme.TextMuted);
+                }
+                else
+                {
+                    var fileName = Path.GetFileName(matched!);
+                    state.Text = insideModels
+                        ? (string.Equals(fileName, item.CheckFile, StringComparison.OrdinalIgnoreCase)
+                            ? "✓ 已安装（models 文件夹）"
+                            : $"✓ 已安装（已识别：{fileName}）")
+                        : $"✓ 已添加（外部路径：{fileName}）";
+                    state.Foreground = ThemeManager.Brush(_theme.Accent);
+                }
+            }
         }
     }
 
     private async Task ToggleAsync(ComponentItem item)
     {
-        if (_manager.IsInstalled(item))
+        var matched = _manager.FindInstalledFile(item, _extraModelPaths);
+        if (matched != null)
         {
+            if (!_manager.IsInsideModelsDir(matched)) return;
+
+            var fileName = Path.GetFileName(matched);
             var ok = MessageBox.Show(this,
-                $"确定删除「{item.Name}」？\n\n删除后需要重新下载才能使用。",
+                $"确定删除 models 目录中的「{fileName}」？\n\n删除后需要重新下载才能使用。",
                 "确认删除", MessageBoxButton.OKCancel, MessageBoxImage.Question);
             if (ok != MessageBoxResult.OK) return;
 
             try
             {
                 _manager.Remove(item);
-                StatusText.Text = $"已删除 {item.Name}";
+                StatusText.Text = $"已删除 {fileName}";
             }
             catch (Exception ex)
             {

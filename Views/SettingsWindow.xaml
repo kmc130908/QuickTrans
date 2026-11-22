@@ -169,7 +169,7 @@
 
                     <StackPanel>
                         <Button x:Name="NavGeneral" Content="⚙  常规与热键" Style="{StaticResource NavButton}" Tag="0" Click="OnNavClick" />
-                        <Button x:Name="NavModel"   Content="🧠  本地模型"   Style="{StaticResource NavButton}" Tag="1" Click="OnNavClick" />
+                        <Button x:Name="NavModel"   Content="🧠  模型与引擎" Style="{StaticResource NavButton}" Tag="1" Click="OnNavClick" />
                         <Button x:Name="NavApi"     Content="🌐  在线接口"   Style="{StaticResource NavButton}" Tag="2" Click="OnNavClick" />
                         <Button x:Name="NavPopup"   Content="🪟  浮窗与外观" Style="{StaticResource NavButton}" Tag="3" Click="OnNavClick" />
                         <Button x:Name="NavDnd"     Content="🔕  免打扰"     Style="{StaticResource NavButton}" Tag="4" Click="OnNavClick" />
@@ -309,21 +309,27 @@
 
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
-                                <Grid>
-                                    <TextBlock Text="已安装的本地模型" Style="{StaticResource SectionTitle}" />
+                                <Grid Margin="0,0,0,6">
+                                    <TextBlock Text="可用本地模型" Style="{StaticResource SectionTitle}" Margin="0" VerticalAlignment="Center" />
                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                        <Button x:Name="RefreshButton" Content="刷新列表" Style="{StaticResource FlatButton}"
-                                                Click="OnRefreshClick" />
-                                        <Button Content="打开模型文件夹" Style="{StaticResource FlatButton}" Margin="8,0,0,0"
+                                        <Button Content="添加模型…" Style="{StaticResource FlatButton}"
+                                                Click="OnAddCustomModelClick" ToolTip="从电脑任意目录选择 .gguf 模型文件" />
+                                        <Button x:Name="AutoScanModelsButton" Content="自动扫描" Style="{StaticResource FlatButton}" Margin="6,0,0,0"
+                                                Click="OnAutoScanModelsClick" ToolTip="自动扫描 LM Studio / 下载文件夹 / 魔搭 / HF 缓存中的 .gguf 模型" />
+                                        <Button Content="下载模型…" Style="{StaticResource FlatButton}" Margin="6,0,0,0"
+                                                Click="OnOpenComponentsClick" ToolTip="一键多线程下载推荐离线翻译模型" />
+                                        <Button Content="模型文件夹" Style="{StaticResource FlatButton}" Margin="6,0,0,0"
                                                 Click="OnOpenModelsFolder" />
+                                        <Button x:Name="RefreshButton" Content="刷新" Style="{StaticResource FlatButton}" Margin="6,0,0,0"
+                                                Click="OnRefreshClick" />
                                     </StackPanel>
                                 </Grid>
 
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
-                                           Text="把任意 .gguf 文件放进 models 文件夹，点刷新就能看到；也可以在「朗读与关于 → 管理组件」里一键下载。" />
+                                           Text="安装目录 models 文件夹里的 .gguf 会自动加载；也可点「添加本地模型…」选用电脑任意位置的 .gguf 文件，或点「下载模型…」一键获取。" />
 
                                 <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Background="{DynamicResource BrushSubPanelBg}"
-                                        MinHeight="110" MaxHeight="220">
+                                        MinHeight="110" MaxHeight="230">
                                     <ListBox x:Name="ModelList" BorderThickness="0" Background="Transparent"
                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                              HorizontalContentAlignment="Stretch">
@@ -334,13 +340,15 @@
                                                         <ColumnDefinition Width="*" />
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
 
                                                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding DisplayName}" FontSize="12.5"
                                                                    Foreground="{DynamicResource BrushTextPrimary}" TextTrimming="CharacterEllipsis" />
                                                         <TextBlock Text="{Binding Subtitle}" FontSize="11"
-                                                                   Foreground="{DynamicResource BrushTextMuted}" Margin="0,2,0,0" />
+                                                                   Foreground="{DynamicResource BrushTextMuted}" Margin="0,2,0,0"
+                                                                   TextTrimming="CharacterEllipsis" />
                                                     </StackPanel>
 
                                                     <Border Grid.Column="1" Background="{DynamicResource BrushAccentSoft}" CornerRadius="4"
@@ -349,9 +357,19 @@
                                                         <TextBlock Text="{Binding Badge}" FontSize="10.5" Foreground="{DynamicResource BrushAccent}" />
                                                     </Border>
 
-                                                    <Button Grid.Column="2" Content="使用"
+                                                    <Button Grid.Column="2" Content="移除"
                                                             Style="{StaticResource FlatButton}"
                                                             VerticalAlignment="Center"
+                                                            Margin="0,0,6,0"
+                                                            Visibility="{Binding RemoveVisibility}"
+                                                            ToolTip="仅从列表移除（不删除硬盘上的模型文件）"
+                                                            Tag="{Binding}"
+                                                            Click="OnRemoveCustomModelClick" />
+
+                                                    <Button Grid.Column="3" Content="使用"
+                                                            Style="{StaticResource FlatButton}"
+                                                            VerticalAlignment="Center"
+                                                            Visibility="{Binding UseVisibility}"
                                                             Tag="{Binding}"
                                                             Click="OnUseModelClick" />
                                                 </Grid>
@@ -417,67 +435,124 @@
                     <StackPanel x:Name="PageApi" Visibility="Collapsed">
                         <TextBlock Text="在线翻译接口（可选）" Style="{StaticResource PageHeader}" />
 
+                        <!-- 已保存的接口列表 -->
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
-                                <TextBlock Text="多套接口配置" Style="{StaticResource SectionTitle}" />
+                                <Grid Margin="0,0,0,8">
+                                    <TextBlock Text="已保存的接口" Style="{StaticResource SectionTitle}" Margin="0" VerticalAlignment="Center" />
+                                    <Button Content="＋ 新建接口" HorizontalAlignment="Right"
+                                            Style="{StaticResource FlatButton}" Click="OnNewProfileClick" />
+                                </Grid>
 
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                                    <TextBlock Text="已保存" FontSize="12" VerticalAlignment="Center" />
-                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="ProfileBox" Width="140" Margin="10,0,0,0"
-                                              SelectionChanged="OnProfileChanged" />
-                                    <TextBlock Text="名称" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" />
-                                    <TextBox x:Name="ProfileNameBox" Width="125" Margin="6,0,0,0"
-                                             ToolTip="给这套接口起个名字，改完点保存即可重命名" />
-                                    <Button Content="新建" Style="{StaticResource FlatButton}" Margin="8,0,0,0"
-                                            Click="OnNewProfileClick" />
-                                    <Button Content="删除" Style="{StaticResource FlatButton}" Margin="6,0,0,0"
-                                            Click="OnDeleteProfileClick" />
-                                </StackPanel>
+                                <Border BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8"
+                                        Background="{DynamicResource BrushSubPanelBg}" MinHeight="64" MaxHeight="170">
+                                    <Grid>
+                                        <TextBlock x:Name="ApiProfileEmptyHint" Text="还没有已保存的接口，在下方填好参数后点右下角「保存」即可加入列表。"
+                                                   FontSize="11.5" Foreground="{DynamicResource BrushTextMuted}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   Margin="12" TextWrapping="Wrap" Visibility="Collapsed" />
+                                        <ListBox x:Name="ApiProfileList" BorderThickness="0" Background="Transparent"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                 HorizontalContentAlignment="Stretch"
+                                                 SelectionChanged="OnProfileListSelectionChanged">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="6,5">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
 
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                                    <TextBlock Text="接口类型" FontSize="12" VerticalAlignment="Center" Width="96" />
-                                    <ComboBox PreviewMouseWheel="OnComboWheel" x:Name="ApiTypeBox" Width="260"
-                                              SelectionChanged="OnApiTypeChanged">
-                                        <ComboBoxItem Content="OpenAI 兼容（DeepSeek / 智谱 / 自建）" />
-                                        <ComboBoxItem Content="百度翻译开放平台" />
-                                        <ComboBoxItem Content="有道智云" />
-                                        <ComboBoxItem Content="谷歌翻译（免费端点，需能访问）" />
-                                    </ComboBox>
-                                </StackPanel>
+                                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding Name}" FontSize="12.5"
+                                                                       Foreground="{DynamicResource BrushTextPrimary}" TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                                                       Foreground="{DynamicResource BrushTextMuted}" Margin="0,2,0,0"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1" Background="{DynamicResource BrushAccentSoft}" CornerRadius="4"
+                                                                Padding="6,2" Margin="8,0" VerticalAlignment="Center"
+                                                                Visibility="{Binding ActiveVisibility}">
+                                                            <TextBlock Text="当前" FontSize="10.5" Foreground="{DynamicResource BrushAccent}" />
+                                                        </Border>
+
+                                                        <Button Grid.Column="2" Content="使用"
+                                                                Style="{StaticResource FlatButton}"
+                                                                VerticalAlignment="Center" Margin="0,0,6,0"
+                                                                Tag="{Binding}" Click="OnUseProfileRowClick" />
+
+                                                        <Button Grid.Column="3" Content="删除"
+                                                                Style="{StaticResource FlatButton}"
+                                                                VerticalAlignment="Center"
+                                                                Tag="{Binding}" Click="OnDeleteProfileRowClick" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </Grid>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 接口参数编辑区 -->
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock x:Name="ApiEditorTitle" Text="接口配置" Style="{StaticResource SectionTitle}" />
 
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="96" />
+                                        <ColumnDefinition Width="124" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
 
-                                    <TextBlock Grid.Row="0" Grid.Column="0" x:Name="ApiUrlLabel" Text="Base URL" FontSize="12"
-                                               VerticalAlignment="Center" Margin="0,0,0,8" />
-                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="ApiUrlBox" Margin="0,0,0,8"
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="接口名称" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,10,8" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="ProfileNameBox" Margin="0,0,0,8"
+                                             ToolTip="给这套接口起个名字（例如 DeepSeek、百度翻译），保存后自动加入上方列表" />
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="接口类型" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,10,8" />
+                                    <ComboBox Grid.Row="1" Grid.Column="1" PreviewMouseWheel="OnComboWheel" x:Name="ApiTypeBox"
+                                              Width="280" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                              SelectionChanged="OnApiTypeChanged">
+                                        <ComboBoxItem Content="OpenAI 兼容（DeepSeek / 智谱 / 自建）" />
+                                        <ComboBoxItem Content="百度翻译开放平台" />
+                                        <ComboBoxItem Content="有道智云" />
+                                        <ComboBoxItem Content="谷歌翻译（免费端点，需能访问）" />
+                                    </ComboBox>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" x:Name="ApiUrlLabel" Text="Base URL" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,10,8" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="ApiUrlBox" Margin="0,0,0,8"
                                              ToolTip="例如 https://api.deepseek.com/v1" />
 
-                                    <TextBlock Grid.Row="1" Grid.Column="0" x:Name="ApiKeyLabel" Text="API Key" FontSize="12"
-                                               VerticalAlignment="Center" Margin="0,0,0,8" />
-                                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="ApiKeyBox" Margin="0,0,0,8" />
+                                    <TextBlock Grid.Row="3" Grid.Column="0" x:Name="ApiKeyLabel" Text="API Key" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,10,8" />
+                                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="ApiKeyBox" Margin="0,0,0,8" />
 
-                                    <TextBlock Grid.Row="2" Grid.Column="0" x:Name="ApiModelLabel" Text="模型名" FontSize="12"
-                                               VerticalAlignment="Center" />
-                                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="ApiModelBox" />
+                                    <TextBlock Grid.Row="4" Grid.Column="0" x:Name="ApiModelLabel" Text="模型名" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,10,0" />
+                                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="ApiModelBox" />
                                 </Grid>
 
                                 <TextBlock x:Name="ApiKeyHelpLink" FontSize="12" Foreground="{DynamicResource BrushAccent}"
                                            Cursor="Hand" Margin="0,10,0,0"
-                                           Text="如何获取密钥 / API 地址？"
+                                           Text="如何获取 API Key 与 Base URL？"
                                            TextDecorations="Underline"
                                            MouseLeftButtonUp="OnApiKeyHelpClick" />
 
-                                <TextBlock x:Name="ApiHint" Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                           Text="填任何 OpenAI 兼容接口都行：DeepSeek、智谱、DeepL 代理、公司网关。" />
+                                <TextBlock x:Name="ApiHint" Style="{StaticResource Hint}" Margin="0,8,0,0" LineHeight="18"
+                                           Text="" />
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -734,11 +809,8 @@
                                           Content="记录最近 100 条翻译历史（仅保存在本地 history.json，不占待机内存）" />
 
                                 <StackPanel Orientation="Horizontal">
-                                    <Button Content="管理组件（引擎 / 模型）…" HorizontalAlignment="Left"
-                                            Style="{StaticResource FlatButton}" Padding="14,5"
-                                            Click="OnOpenComponentsClick" />
                                     <Button Content="查看翻译历史" HorizontalAlignment="Left"
-                                            Style="{StaticResource FlatButton}" Padding="14,5" Margin="10,0,0,0"
+                                            Style="{StaticResource FlatButton}" Padding="14,5"
                                             Click="OnOpenHistoryClick" />
                                     <Button Content="查看使用引导" HorizontalAlignment="Left"
                                             Style="{StaticResource FlatButton}" Padding="14,5" Margin="10,0,0,0"
