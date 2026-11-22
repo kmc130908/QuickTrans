@@ -1,8 +1,8 @@
 {
-  "version": "2.1.0",
-  "zipUrl": "https://github.com/kmc130908/QuickTrans/releases/download/v2.1.0/QuickTrans-win-x64-2.1.0.zip",
-  "zipSha256": "2CE6BBA745E8F8A1B0B97EF6E4EF4457DF43D7B3998DE5F71F021D8595A31CB0",
-  "liteZipUrl": "https://github.com/kmc130908/QuickTrans/releases/download/v2.1.0/QuickTrans-Lite-win-x64-2.1.0.zip",
-  "liteZipSha256": "5B9FFD0A240F79B7C43FEBA81BBFC2DD3122D67D0091172DA2AC56EB8CBB3409",
-  "notes": "新增模块化设置页与实时深浅主题、单词词典、译/润/解模式、本地翻译历史、一键替换、PDF智能去换行、多屏OCR、全屏与黑名单免打扰；优化浮窗UI与对比度，待机内存降至约15MB，CPU模式零显存。"
+  "version": "2.2.0",
+  "zipUrl": "https://github.com/kmc130908/QuickTrans/releases/download/v2.2.0/QuickTrans-win-x64-2.2.0.zip",
+  "zipSha256": "7CAD43EB6A9F68A8FC733BCB12B0673A3919E5397B2F537D0FE67FF39FD9DF2B",
+  "liteZipUrl": "https://github.com/kmc130908/QuickTrans/releases/download/v2.2.0/QuickTrans-Lite-win-x64-2.2.0.zip",
+  "liteZipSha256": "5CEC208F9321A1CB7931F9DED3AD894FFF26F631C91CBB7AB2F512EE3EA8268B",
+  "notes": "新增 sakura/plamo 专用翻译模板、模型 4 线程分片下载与自定义模型路径、托盘接口/设备切换；修复托盘切模型不生效、配置互相覆盖、长翻译被闲置卸载中断、复制误触发翻译、Esc 无法关闭浮窗等问题。"
 }
