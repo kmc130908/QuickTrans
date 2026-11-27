@@ -17,13 +17,21 @@ public partial class App : System.Windows.Application
 {
     static App()
     {
-        // 纯 2D 文字浮窗与设置表单无需 GPU 硬件渲染，软件渲染可减少约 5–11MB 常驻内存
-        RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+        UiQualityHelper.ConfigureProcessRendering(Environment.GetCommandLineArgs());
     }
 
     private Mutex? _mutex;
     private bool _ownsMutex;
     private WinForms.NotifyIcon? _tray;
+    private WinForms.ContextMenuStrip? _trayMenu;
+    private FluentTrayMenuRenderer? _trayRenderer;
+    private WinForms.ToolStripMenuItem? _translateItem;
+    private WinForms.ToolStripMenuItem? _ocrItem;
+    private WinForms.ToolStripMenuItem? _replaceItem;
+    private WinForms.ToolStripMenuItem? _versionItem;
+    private WinForms.ToolStripMenuItem? _modelMenu;
+    private WinForms.ToolStripMenuItem? _apiMenu;
+    private WinForms.ToolStripMenuItem? _deviceMenu;
     private HotkeyManager? _hotkey;
     private HotkeyManager? _ocrHotkey;
     private HotkeyManager? _replaceHotkey;
@@ -46,6 +54,7 @@ public partial class App : System.Windows.Application
     private SpeechService? _speech;
     private WinForms.ToolStripMenuItem? _updateItem;
     private UpdateService.UpdateInfo? _pendingUpdate;
+    private bool _checkingUpdate;
     private CancellationTokenSource? _cts;
     private System.Windows.Threading.DispatcherTimer? _idleTimer;
     private string _currentSource = "";
@@ -284,62 +293,131 @@ public partial class App : System.Windows.Application
             Visible = true,
         };
 
-        var menu = new WinForms.ContextMenuStrip();
+        var themePalette = ThemeManager.Resolve(_config.Theme);
+        _trayRenderer = new FluentTrayMenuRenderer(themePalette);
+        _trayMenu = new WinForms.ContextMenuStrip();
+        _trayMenu.Opening += (_, _) => RefreshTrayMenuTheme();
 
-        var translateItem = new WinForms.ToolStripMenuItem($"翻译选中文本  ({_config.Hotkey})");
-        translateItem.Click += async (_, _) => await TranslateSelectionAsync();
+        _translateItem = new WinForms.ToolStripMenuItem("翻译选中文本")
+        {
+            ShortcutKeyDisplayString = _config.Hotkey,
+            Tag = new TrayMenuItemTag(TrayIconKind.Translate),
+        };
+        _translateItem.Click += async (_, _) => await TranslateSelectionAsync();
 
-        var ocrItem = new WinForms.ToolStripMenuItem($"截图翻译  ({_config.OcrHotkey})");
-        ocrItem.Click += async (_, _) => await StartOcrAsync();
+        _ocrItem = new WinForms.ToolStripMenuItem("截图翻译")
+        {
+            ShortcutKeyDisplayString = _config.OcrHotkey,
+            Tag = new TrayMenuItemTag(TrayIconKind.Ocr),
+        };
+        _ocrItem.Click += async (_, _) => await StartOcrAsync();
 
         var repKey = string.IsNullOrWhiteSpace(_config.ReplaceHotkey) ? "Alt+R" : _config.ReplaceHotkey;
-        var replaceItem = new WinForms.ToolStripMenuItem($"替换翻译  ({repKey})");
-        replaceItem.Click += async (_, _) => await ReplaceSelectionAsync();
+        _replaceItem = new WinForms.ToolStripMenuItem("替换翻译")
+        {
+            ShortcutKeyDisplayString = repKey,
+            Tag = new TrayMenuItemTag(TrayIconKind.Replace),
+        };
+        _replaceItem.Click += async (_, _) => await ReplaceSelectionAsync();
 
-        var inputItem = new WinForms.ToolStripMenuItem("手动输入翻译");
+        var inputItem = new WinForms.ToolStripMenuItem("手动输入翻译")
+        {
+            Tag = new TrayMenuItemTag(TrayIconKind.Input),
+        };
         inputItem.Click += (_, _) => OpenInputPopup();
 
-        var historyItem = new WinForms.ToolStripMenuItem("翻译历史…");
+        var historyItem = new WinForms.ToolStripMenuItem("翻译历史…")
+        {
+            Tag = new TrayMenuItemTag(TrayIconKind.History),
+        };
         historyItem.Click += (_, _) => OpenHistory();
 
-        var settingsItem = new WinForms.ToolStripMenuItem("设置…");
-        settingsItem.Click += (_, _) => OpenSettings();
-
-        _updateItem = new WinForms.ToolStripMenuItem("发现新版本…")
+        var verBadge = UpdateService.IsLiteBuild
+            ? $"v{UpdateService.CurrentVersion} 轻量版"
+            : $"v{UpdateService.CurrentVersion}";
+        _versionItem = new WinForms.ToolStripMenuItem("当前版本")
         {
-            Visible = false,
-            ForeColor = System.Drawing.Color.FromArgb(0x3B, 0x5B, 0xA8),
+            ShortcutKeyDisplayString = verBadge,
+            Enabled = false,
+            Tag = new TrayMenuItemTag(TrayIconKind.Version),
         };
-        _updateItem.Click += (_, _) => OpenSettings();
 
-        var modelMenu = new WinForms.ToolStripMenuItem("切换本地模型");
-        modelMenu.DropDownOpening += (_, _) => FillModelMenu(modelMenu);
+        var hasPending = UpdateService.HasPendingUpdate();
+        _updateItem = new WinForms.ToolStripMenuItem(hasPending ? "重启并更新…" : "检查更新")
+        {
+            Tag = new TrayMenuItemTag(TrayIconKind.Update, IsAccent: hasPending),
+        };
+        _updateItem.Click += async (_, _) => await OnTrayUpdateClickAsync();
 
-        var apiMenu = new WinForms.ToolStripMenuItem("切换在线接口");
-        apiMenu.DropDownOpening += (_, _) => FillApiMenu(apiMenu);
+        _modelMenu = new WinForms.ToolStripMenuItem("切换本地模型")
+        {
+            Tag = new TrayMenuItemTag(TrayIconKind.Model),
+        };
+        _modelMenu.DropDownOpening += (_, _) => FillModelMenu(_modelMenu);
 
-        var deviceMenu = new WinForms.ToolStripMenuItem("本地推理设备");
-        deviceMenu.DropDownOpening += (_, _) => FillDeviceMenu(deviceMenu);
+        _apiMenu = new WinForms.ToolStripMenuItem("切换在线接口")
+        {
+            Tag = new TrayMenuItemTag(TrayIconKind.Api),
+        };
+        _apiMenu.DropDownOpening += (_, _) => FillApiMenu(_apiMenu);
 
-        var exitItem = new WinForms.ToolStripMenuItem("退出");
+        _deviceMenu = new WinForms.ToolStripMenuItem("本地推理设备")
+        {
+            Tag = new TrayMenuItemTag(TrayIconKind.Device),
+        };
+        _deviceMenu.DropDownOpening += (_, _) => FillDeviceMenu(_deviceMenu);
+
+        var exitItem = new WinForms.ToolStripMenuItem("退出")
+        {
+            Tag = new TrayMenuItemTag(TrayIconKind.Exit, IsDanger: true),
+        };
         exitItem.Click += (_, _) => ExitApp();
 
-        menu.Items.Add(translateItem);
-        menu.Items.Add(ocrItem);
-        menu.Items.Add(replaceItem);
-        menu.Items.Add(inputItem);
-        menu.Items.Add(historyItem);
-        menu.Items.Add(new WinForms.ToolStripSeparator());
-        menu.Items.Add(modelMenu);
-        menu.Items.Add(apiMenu);
-        menu.Items.Add(deviceMenu);
-        menu.Items.Add(_updateItem);
-        menu.Items.Add(settingsItem);
-        menu.Items.Add(new WinForms.ToolStripSeparator());
-        menu.Items.Add(exitItem);
+        _trayMenu.Items.Add(_translateItem);
+        _trayMenu.Items.Add(_ocrItem);
+        _trayMenu.Items.Add(_replaceItem);
+        _trayMenu.Items.Add(inputItem);
+        _trayMenu.Items.Add(historyItem);
+        _trayMenu.Items.Add(new WinForms.ToolStripSeparator());
+        _trayMenu.Items.Add(_modelMenu);
+        _trayMenu.Items.Add(_apiMenu);
+        _trayMenu.Items.Add(_deviceMenu);
+        _trayMenu.Items.Add(new WinForms.ToolStripSeparator());
+        _trayMenu.Items.Add(_versionItem);
+        _trayMenu.Items.Add(_updateItem);
+        _trayMenu.Items.Add(new WinForms.ToolStripSeparator());
+        _trayMenu.Items.Add(exitItem);
 
-        _tray.ContextMenuStrip = menu;
-        _tray.DoubleClick += (_, _) => OpenSettings();
+        RefreshTrayMenuTheme();
+
+        _tray.ContextMenuStrip = _trayMenu;
+        _tray.MouseClick += (_, e) =>
+        {
+            if (e.Button == WinForms.MouseButtons.Left) OpenSettings();
+        };
+    }
+
+    private void RefreshTrayMenuTheme()
+    {
+        if (_trayMenu == null || _trayRenderer == null) return;
+
+        var palette = ThemeManager.Resolve(_config.Theme);
+        _trayRenderer.UpdatePalette(palette);
+
+        if (_translateItem != null) _translateItem.ShortcutKeyDisplayString = _config.Hotkey;
+        if (_ocrItem != null) _ocrItem.ShortcutKeyDisplayString = _config.OcrHotkey;
+        if (_replaceItem != null)
+            _replaceItem.ShortcutKeyDisplayString = string.IsNullOrWhiteSpace(_config.ReplaceHotkey)
+                ? "Alt+R"
+                : _config.ReplaceHotkey;
+
+        TrayMenuStyler.StyleMenu(_trayMenu, _trayRenderer, palette, _config.UiFontScale);
+        if (_modelMenu != null)
+            TrayMenuStyler.StyleMenu(_modelMenu.DropDown, _trayRenderer, palette, _config.UiFontScale);
+        if (_apiMenu != null)
+            TrayMenuStyler.StyleMenu(_apiMenu.DropDown, _trayRenderer, palette, _config.UiFontScale);
+        if (_deviceMenu != null)
+            TrayMenuStyler.StyleMenu(_deviceMenu.DropDown, _trayRenderer, palette, _config.UiFontScale);
     }
 
     private void FillModelMenu(WinForms.ToolStripMenuItem parent)
@@ -350,6 +428,8 @@ public partial class App : System.Windows.Application
         if (models.Count == 0)
         {
             parent.DropDownItems.Add(new WinForms.ToolStripMenuItem("（还没有本地模型，可在「设置 → 模型与引擎」添加或下载）") { Enabled = false });
+            TrayMenuStyler.StyleItems(parent.DropDownItems);
+            TrayMenuStyler.ApplyDwm(parent.DropDown, ThemeManager.Resolve(_config.Theme));
             return;
         }
 
@@ -387,6 +467,9 @@ public partial class App : System.Windows.Application
             };
             parent.DropDownItems.Add(item);
         }
+
+        TrayMenuStyler.StyleItems(parent.DropDownItems);
+        TrayMenuStyler.ApplyDwm(parent.DropDown, ThemeManager.Resolve(_config.Theme));
     }
 
     private void FillApiMenu(WinForms.ToolStripMenuItem parent)
@@ -397,6 +480,8 @@ public partial class App : System.Windows.Application
         if (profiles.Count == 0)
         {
             parent.DropDownItems.Add(new WinForms.ToolStripMenuItem("（暂无已保存接口，请在「设置 → 在线接口」添加）") { Enabled = false });
+            TrayMenuStyler.StyleItems(parent.DropDownItems);
+            TrayMenuStyler.ApplyDwm(parent.DropDown, ThemeManager.Resolve(_config.Theme));
             return;
         }
 
@@ -444,6 +529,9 @@ public partial class App : System.Windows.Application
             };
             parent.DropDownItems.Add(item);
         }
+
+        TrayMenuStyler.StyleItems(parent.DropDownItems);
+        TrayMenuStyler.ApplyDwm(parent.DropDown, ThemeManager.Resolve(_config.Theme));
     }
 
     private void FillDeviceMenu(WinForms.ToolStripMenuItem parent)
@@ -482,6 +570,8 @@ public partial class App : System.Windows.Application
 
         parent.DropDownItems.Add(gpuItem);
         parent.DropDownItems.Add(cpuItem);
+        TrayMenuStyler.StyleItems(parent.DropDownItems);
+        TrayMenuStyler.ApplyDwm(parent.DropDown, ThemeManager.Resolve(_config.Theme));
     }
 
     private static Drawing.Icon CreateTrayIcon(int style)
@@ -489,13 +579,9 @@ public partial class App : System.Windows.Application
         // 优先用打包进资源的图标，换样式只要换编号
         try
         {
-            var uri = new Uri($"pack://application:,,,/assets/tray{style}.ico", UriKind.Absolute);
-            var res = GetResourceStream(uri);
-            if (res?.Stream != null)
-            {
-                using var stream = res.Stream;
-                return new Drawing.Icon(stream);
-            }
+            using var stream = UiQualityHelper.OpenBrandIconStream(style);
+            if (stream != null)
+                return new Drawing.Icon(stream, WinForms.SystemInformation.SmallIconSize);
         }
         catch
         {
@@ -508,9 +594,15 @@ public partial class App : System.Windows.Application
             g.SmoothingMode = Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
             g.Clear(Drawing.Color.Transparent);
-            using var brush = new Drawing.SolidBrush(Drawing.Color.FromArgb(59, 91, 168));
-            g.FillEllipse(brush, 0, 0, 31, 31);
-            using var font = new Drawing.Font("Microsoft YaHei UI", 15, Drawing.FontStyle.Bold, Drawing.GraphicsUnit.Pixel);
+            using var brush = new Drawing.SolidBrush(Drawing.Color.FromArgb(43, 89, 195));
+            using var path = new Drawing.Drawing2D.GraphicsPath();
+            path.AddArc(1, 1, 10, 10, 180, 90);
+            path.AddArc(21, 1, 10, 10, 270, 90);
+            path.AddArc(21, 21, 10, 10, 0, 90);
+            path.AddArc(1, 21, 10, 10, 90, 90);
+            path.CloseFigure();
+            g.FillPath(brush, path);
+            using var font = new Drawing.Font("Microsoft YaHei UI", 16, Drawing.FontStyle.Bold, Drawing.GraphicsUnit.Pixel);
             using var fmt = new Drawing.StringFormat
             {
                 Alignment = Drawing.StringAlignment.Center,
@@ -798,6 +890,7 @@ public partial class App : System.Windows.Application
 
         var popup = new PopupWindow();
         popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+        popup.ApplyLayoutAndFont(_config);
         popup.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
 
         popup.LanguageRequested += async lang => await OnLanguageRequestedAsync(lang);
@@ -1408,14 +1501,14 @@ public partial class App : System.Windows.Application
             _pendingUpdate = info;
             if (_updateItem != null)
             {
-                _updateItem.Text = $"发现新版本 {info.Version}…";
-                _updateItem.Visible = true;
+                _updateItem.Text = $"发现新版本 v{info.Version}…";
+                _updateItem.Tag = new TrayMenuItemTag(TrayIconKind.Update, IsAccent: true);
             }
 
             try
             {
                 _tray?.ShowBalloonTip(6000, "QuickTrans 有新版本",
-                    $"当前 {UpdateService.CurrentVersion} → {info.Version}，右键托盘图标可更新。",
+                    $"当前 v{UpdateService.CurrentVersion} → v{info.Version}，点击设置页「关于与更新」可升级。",
                     WinForms.ToolTipIcon.Info);
             }
             catch { /* 气泡提示失败不影响主流程 */ }
@@ -1425,6 +1518,74 @@ public partial class App : System.Windows.Application
         catch
         {
             // 检查失败静默忽略，不能因为更新检查影响正常使用
+        }
+    }
+
+    /// <summary>托盘右键「检查更新」：已有新版本或待重启更新时打开设置页，否则联网检查并气泡提示。</summary>
+    private async Task OnTrayUpdateClickAsync()
+    {
+        if (UpdateService.HasPendingUpdate() || _pendingUpdate != null)
+        {
+            OpenSettings();
+            return;
+        }
+        if (_checkingUpdate) return;
+
+        _checkingUpdate = true;
+        if (_updateItem != null)
+        {
+            _updateItem.Text = "正在检查更新…";
+            _updateItem.Enabled = false;
+        }
+
+        try
+        {
+            var info = await new UpdateService().CheckAsync();
+            if (info != null)
+            {
+                _pendingUpdate = info;
+                if (_updateItem != null)
+                {
+                    _updateItem.Text = $"发现新版本 v{info.Version}…";
+                    _updateItem.Tag = new TrayMenuItemTag(TrayIconKind.Update, IsAccent: true);
+                }
+                try
+                {
+                    _tray?.ShowBalloonTip(6000, "QuickTrans 有新版本",
+                        $"当前 v{UpdateService.CurrentVersion} → v{info.Version}，点托盘左键打开设置即可升级。",
+                        WinForms.ToolTipIcon.Info);
+                }
+                catch { }
+                Log($"manual check update available: {UpdateService.CurrentVersion} -> {info.Version}");
+            }
+            else
+            {
+                if (_updateItem != null) _updateItem.Text = "检查更新";
+                try
+                {
+                    _tray?.ShowBalloonTip(4000, "已是最新版本",
+                        $"当前版本 v{UpdateService.CurrentVersion} 已是最新。",
+                        WinForms.ToolTipIcon.Info);
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_updateItem != null) _updateItem.Text = "检查更新";
+            try
+            {
+                _tray?.ShowBalloonTip(4000, "检查更新失败",
+                    "暂时无法连接更新服务器，请稍后重试。",
+                    WinForms.ToolTipIcon.Warning);
+            }
+            catch { }
+            Log("manual check update failed: " + ex.Message);
+        }
+        finally
+        {
+            _checkingUpdate = false;
+            if (_updateItem != null) _updateItem.Enabled = true;
         }
     }
 
@@ -1656,6 +1817,7 @@ public partial class App : System.Windows.Application
             var popup = new PopupWindow();
             MainWindow = popup;
             popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+            popup.ApplyLayoutAndFont(_config);
             popup.ApplyTtsVisibility(_config.TtsEnabled);
             popup.ApplyHotkeyHints(_config.OcrHotkey, _config.ReplaceHotkey);
             popup.ConfigureLanguages(_config.QuickLanguages, _currentTarget);
@@ -1666,6 +1828,7 @@ public partial class App : System.Windows.Application
                 // 每次翻译前重读一次配置，保证在设置页刚改完的接口/模型立即生效
                 _config = AppConfig.Load();
                 popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+                popup.ApplyLayoutAndFont(_config);
                 popup.ApplyTtsVisibility(_config.TtsEnabled);
 
                 _currentSource = source;
@@ -1986,6 +2149,7 @@ public partial class App : System.Windows.Application
             MainWindow = popup;
             _currentMode = "translate";
             popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+            popup.ApplyLayoutAndFont(_config);
             popup.ApplyTtsVisibility(_config.TtsEnabled);
             popup.ApplyHotkeyHints(_config.OcrHotkey, _config.ReplaceHotkey);
             popup.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
@@ -2004,6 +2168,7 @@ public partial class App : System.Windows.Application
             {
                 _config = AppConfig.Load();
                 popup.ApplyTheme(_config.Theme, _config.PopupOpacity);
+                popup.ApplyLayoutAndFont(_config);
                 popup.ApplyTtsVisibility(_config.TtsEnabled);
 
                 _currentSource = source;
@@ -2453,10 +2618,12 @@ public partial class App : System.Windows.Application
         PopupWindow.TimedCloseEnabled = _config.PopupTimedCloseEnabled;
         PopupWindow.TimedCloseSeconds = _config.PopupTimedCloseSeconds;
         _popup?.ApplyTheme(_config.Theme, _config.PopupOpacity);
+        _popup?.ApplyLayoutAndFont(_config);
         _popup?.ApplyTtsVisibility(_config.TtsEnabled);
         _popup?.ApplyHotkeyHints(_config.OcrHotkey, _config.ReplaceHotkey);
         _popup?.ConfigureMode(_currentMode, TranslationService.SupportsPromptModes(_config));
         BroadcastConfigReloadToChildren();
+        RefreshTrayMenuTheme();
 
         if (!string.Equals(_config.Hotkey, oldHotkey, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(_config.OcrHotkey, oldOcrHotkey, StringComparison.OrdinalIgnoreCase)

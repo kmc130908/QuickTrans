@@ -19,7 +19,11 @@ public partial class WelcomeWindow : Window
     public WelcomeWindow(string? themeSetting = null)
     {
         InitializeComponent();
-        _theme = ThemeManager.Resolve(themeSetting ?? AppConfig.Load().Theme);
+        UiQualityHelper.AttachWindowQuality(this);
+        var cfg = AppConfig.Load();
+        ThemeManager.ApplyFontScale(Resources, cfg.UiFontScale);
+        UiQualityHelper.ApplyWindowIcon(this, cfg.TrayIconStyle);
+        _theme = ThemeManager.Resolve(themeSetting ?? cfg.Theme);
         ApplyTheme();
         ApplyEngineHint();
         BuildDots();
@@ -35,7 +39,9 @@ public partial class WelcomeWindow : Window
         Resources["BrushTextSecondary"] = ThemeManager.Brush(_theme.TextSecondary);
         Resources["BrushTextMuted"] = ThemeManager.Brush(_theme.TextMuted);
         Resources["BrushAccent"] = ThemeManager.Brush(_theme.Accent);
+        Resources["BrushAccentSoft"] = ThemeManager.Brush(_theme.AccentSoftBg);
         Resources["BrushPillBg"] = ThemeManager.Brush(_theme.PillBg);
+        UiQualityHelper.ApplyDwmTheme(this, _theme.IsDark, _theme.WindowBg);
     }
 
     /// <summary>根据当前内置引擎类型（Vulkan / CUDA / CPU）动态展示加速说明。</summary>
@@ -44,17 +50,17 @@ public partial class WelcomeWindow : Window
         var backend = EngineManager.GetGpuBackendKind(Path.Combine(AppContext.BaseDirectory, "engine"));
         if (string.Equals(backend, "Vulkan", StringComparison.OrdinalIgnoreCase))
         {
-            AccelTitle.Text = "⚡  已内置 Vulkan 通用 GPU + CPU 引擎";
+            AccelTitle.Text = "已内置 Vulkan 通用 GPU + CPU 引擎";
             AccelDesc.Text = "NVIDIA / AMD / Intel 显卡均可自动加速，无需再下载引擎；切回 CPU 模式时显存占用为 0 MB，支持闲置自动卸载模型。";
         }
         else if (string.Equals(backend, "CUDA", StringComparison.OrdinalIgnoreCase))
         {
-            AccelTitle.Text = "⚡  已内置 CUDA GPU 加速";
+            AccelTitle.Text = "已内置 CUDA GPU 加速";
             AccelDesc.Text = "检测到 NVIDIA 显卡会自动启用 GPU 加速，也可在设置或托盘菜单里随时切回 CPU（0 显存占用）。";
         }
         else
         {
-            AccelTitle.Text = "⚡  内置 CPU 推理引擎";
+            AccelTitle.Text = "内置 CPU 推理引擎";
             AccelDesc.Text = "当前为纯 CPU 引擎，装完即可离线使用；支持闲置自动卸载模型释放内存。";
         }
     }
@@ -92,7 +98,9 @@ public partial class WelcomeWindow : Window
         {
             if (DotPanel.Children[i] is Border dot)
             {
-                dot.Background = i == index
+                var active = i == index;
+                dot.Width = active ? 18 : 7;
+                dot.Background = active
                     ? ThemeManager.Brush(_theme.Accent)
                     : ThemeManager.Brush(_theme.Border);
             }

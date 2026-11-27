@@ -1,12 +1,61 @@
 <Window x:Class="QuickTrans.Views.ComponentWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sys="clr-namespace:System;assembly=System.Runtime"
+        xmlns:v="clr-namespace:QuickTrans.Views"
         Title="模型下载与管理" Width="620" Height="560"
         WindowStartupLocation="CenterScreen"
         Background="#F5F5F7"
         FontFamily="{StaticResource UiFont}"
-        TextOptions.TextFormattingMode="Display"
+        SnapsToDevicePixels="True"
         UseLayoutRounding="True">
+
+    <Window.Resources>
+        <sys:Double x:Key="FontSizeSm">12.5</sys:Double>
+        <sys:Double x:Key="FontSizeBase">13.5</sys:Double>
+        <sys:Double x:Key="FontSizeHeader">20.0</sys:Double>
+
+        <Style x:Key="PillBtn" TargetType="Button">
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="16,6" />
+            <Setter Property="FontSize" Value="{DynamicResource FontSizeSm}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.86" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ProgressBar">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid x:Name="TemplateRoot" SnapsToDevicePixels="True">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="2" />
+                            <Border x:Name="PART_Track" />
+                            <Decorator x:Name="PART_Indicator" HorizontalAlignment="Left">
+                                <Border Background="{TemplateBinding Foreground}" CornerRadius="2" />
+                            </Decorator>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid Margin="0">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -15,13 +64,20 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="24,22,24,0">
-            <TextBlock x:Name="TitleText" Text="模型下载与管理" FontSize="19" FontWeight="SemiBold" Foreground="#1A1A1E" />
-            <TextBlock x:Name="HintText" FontSize="12.5" Foreground="#6B6B75"
-                       Margin="0,8,0,0" TextWrapping="Wrap"
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Border x:Name="HeaderIconBadge" Width="30" Height="30" CornerRadius="8" Background="#E6EEFD" Margin="0,0,10,0">
+                    <v:VectorIcon x:Name="HeaderIcon" Data="{StaticResource IconDownload}" Size="16"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <TextBlock x:Name="TitleText" Text="模型下载与管理" FontFamily="{StaticResource DisplayFont}"
+                           FontSize="{DynamicResource FontSizeHeader}" FontWeight="SemiBold" Foreground="#1A1A1E" VerticalAlignment="Center" />
+            </StackPanel>
+            <TextBlock x:Name="HintText" FontSize="{DynamicResource FontSizeSm}" Foreground="#6B6B75"
+                       Margin="0,10,0,0" TextWrapping="Wrap" LineHeight="19"
                        Text="已内置 Vulkan 通用 GPU+CPU 引擎，无需额外下载引擎。可在下方一键下载本地翻译模型，已有模型放进 models 文件夹也会自动识别。" />
         </StackPanel>
 
-        <ScrollViewer Grid.Row="1" Margin="24,16,24,0" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="ComponentScroll" Grid.Row="1" Margin="24,16,24,0" VerticalScrollBarVisibility="Auto">
             <StackPanel x:Name="ListPanel" />
         </ScrollViewer>
 
@@ -30,8 +86,8 @@
                 <TextBlock x:Name="StatusText" FontSize="12" Foreground="#6B6B75"
                            VerticalAlignment="Center" Text="" TextWrapping="Wrap" />
                 <Button x:Name="CloseBtn" Content="关闭" HorizontalAlignment="Right" Padding="20,6"
-                        FontSize="12.5" Cursor="Hand" Click="OnCloseClick"
-                        Background="#F2F2F5" BorderThickness="0" Foreground="#3A3A44" />
+                        Style="{StaticResource PillBtn}" FontSize="12.5" Click="OnCloseClick"
+                        Background="#F2F2F5" Foreground="#3A3A44" />
             </Grid>
         </Border>
     </Grid>

@@ -3,6 +3,88 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
-        <FontFamily x:Key="UiFont">Microsoft YaHei UI, Segoe UI</FontFamily>
+        <!-- Windows 11 现代字体栈：优先 Variable 字体与高分屏清晰英文 + 雅黑中文 -->
+        <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI</FontFamily>
+        <FontFamily x:Key="DisplayFont">Segoe UI Variable Display, Segoe UI, Microsoft YaHei UI</FontFamily>
+        <FontFamily x:Key="MonoFont">Cascadia Mono, Cascadia Code, Consolas, Microsoft YaHei UI</FontFamily>
+
+        <!-- 统一 24×24 矢量图标库（Lucide / Fluent 风格线性几何） -->
+        <StreamGeometry x:Key="IconTranslate">M5 8l6 6 M4 14l6-6 2-3 M2 5h12 M7 2h1 M12 18h10 M17 12l5 10 M17 12l-5 10</StreamGeometry>
+        <StreamGeometry x:Key="IconSliders">M4 6h16 M4 12h16 M4 18h16 M8 3v6 M15 9v6 M10 15v6</StreamGeometry>
+        <StreamGeometry x:Key="IconCpu">M7 7h10v10H7z M10 10h4v4h-4z M9 2v3 M15 2v3 M9 19v3 M15 19v3 M2 9h3 M2 15h3 M19 9h3 M19 15h3</StreamGeometry>
+        <StreamGeometry x:Key="IconGlobe">M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0-20z M2 12h20 M12 2c2.8 2.8 4.2 6.2 4.2 10s-1.4 7.2-4.2 10c-2.8-2.8-4.2-6.2-4.2-10s1.4-7.2 4.2-10z</StreamGeometry>
+        <StreamGeometry x:Key="IconPalette">M12 2.5a9.5 9.5 0 0 0 0 19c1.2 0 2.1-.9 2.1-2.1c0-.5-.2-1-.5-1.3c-.3-.4-.5-.8-.5-1.3c0-1.1.9-2 2-2h2.2c3.1 0 5.7-2.4 5.7-5.5C23 5.5 18.1 2.5 12 2.5z M7.5 11.5a1 1 0 1 0 0 .01 M10 7.5a1 1 0 1 0 0 .01 M15 7.5a1 1 0 1 0 0 .01 M17.5 11.5a1 1 0 1 0 0 .01</StreamGeometry>
+        <StreamGeometry x:Key="IconBellOff">M10.3 3.3A6 6 0 0 1 18 9c0 3.7 1.2 5.4 2 6.5H7.2 M6 10v1c0 2.3-.9 3.6-1.7 4.5H17 M10 19a2 2 0 0 0 4 0 M3 3l18 18</StreamGeometry>
+        <StreamGeometry x:Key="IconVolume">M11 5L6 9H2v6h4l5 4V5z M15.5 8.5a5 5 0 0 1 0 7 M18.5 5.5a9 9 0 0 1 0 13</StreamGeometry>
+        <StreamGeometry x:Key="IconHistory">M3 12a9 9 0 1 0 3-6.7L3 8 M3 3v5h5 M12 7v5l3.5 2</StreamGeometry>
+        <StreamGeometry x:Key="IconPin">M15 4l5 5-2 2-2.5-.5L11 15l.5 3.5-2 2L6 17l-3.5 3.5 M6 17l-3-3 2-2 3.5.5L13 8.5 12.5 6 15 4</StreamGeometry>
+        <StreamGeometry x:Key="IconClose">M6 6l12 12 M18 6L6 18</StreamGeometry>
+        <StreamGeometry x:Key="IconSettings">M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33a1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z</StreamGeometry>
+        <StreamGeometry x:Key="IconCopy">M9 9h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V11a2 2 0 0 1 2-2z M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1</StreamGeometry>
+        <StreamGeometry x:Key="IconPlus">M12 5v14 M5 12h14</StreamGeometry>
+        <StreamGeometry x:Key="IconSearch">M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14z M21 21l-4.35-4.35</StreamGeometry>
+        <StreamGeometry x:Key="IconTrash">M3 6h18 M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6</StreamGeometry>
+        <StreamGeometry x:Key="IconCheck">M5 13l4 4L19 7</StreamGeometry>
+        <StreamGeometry x:Key="IconDownload">M12 3v12 M7 10l5 5 5-5 M4 19h16</StreamGeometry>
+        <StreamGeometry x:Key="IconCursor">M5 3l14 9-6 1.5L10.5 20z</StreamGeometry>
+        <StreamGeometry x:Key="IconCrop">M6 2v14a2 2 0 0 0 2 2h14 M18 22V8a2 2 0 0 0-2-2H2</StreamGeometry>
+        <StreamGeometry x:Key="IconReplace">M17 3l4 4-4 4 M3 7h18 M7 21l-4-4 4-4 M21 17H3</StreamGeometry>
+        <StreamGeometry x:Key="IconBook">M4 19.5A2.5 2.5 0 0 1 6.5 17H20 M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z</StreamGeometry>
+        <StreamGeometry x:Key="IconFileText">M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M8 13h8 M8 17h6</StreamGeometry>
+        <StreamGeometry x:Key="IconContrast">M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0-20z M12 2v20 M12 6l4 4 M12 10l6 6 M12 14l4 4</StreamGeometry>
+        <StreamGeometry x:Key="IconBolt">M13 2L4 14h7l-1 8 9-12h-7z</StreamGeometry>
+        <StreamGeometry x:Key="IconBox">M12 2l8.5 4.9v10.2L12 22l-8.5-4.9V6.9z M3.5 6.9L12 12l8.5-5.1 M12 12v10</StreamGeometry>
+        <StreamGeometry x:Key="IconChevronDown">M6 9l6 6 6-6</StreamGeometry>
+
+        <!-- 现代细条透明圆角滚动条：深浅主题通用 -->
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="Width" Value="8" />
+            <Setter Property="MinWidth" Value="8" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Grid Background="Transparent" SnapsToDevicePixels="True">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" IsTabStop="False" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" IsTabStop="False" />
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border x:Name="ThumbBar" Background="#4C7A8294" CornerRadius="3" Margin="2,2,2,2" />
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbBar" Property="Background" Value="#827A8294" />
+                                                        <Setter TargetName="ThumbBar" Property="Margin" Value="1,2,1,2" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbBar" Property="Background" Value="#B07A8294" />
+                                                        <Setter TargetName="ThumbBar" Property="Margin" Value="1,2,1,2" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter Property="Width" Value="Auto" />
+                                <Setter Property="MinWidth" Value="0" />
+                                <Setter Property="Height" Value="8" />
+                                <Setter Property="MinHeight" Value="8" />
+                                <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Application.Resources>
 </Application>

@@ -10,7 +10,9 @@
         ResizeMode="NoResize"
         WindowStartupLocation="Manual"
         Cursor="Cross"
-        FontFamily="{StaticResource UiFont}">
+        FontFamily="{StaticResource UiFont}"
+        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="ClearType">
 
     <Canvas x:Name="Root" Background="Transparent">
 

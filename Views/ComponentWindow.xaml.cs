@@ -24,10 +24,14 @@ public partial class ComponentWindow : Window
     public ComponentWindow(ComponentManager manager, IEnumerable<string>? extraModelPaths = null, string? themeSetting = null)
     {
         InitializeComponent();
+        UiQualityHelper.AttachWindowQuality(this);
+        UiQualityHelper.AttachSmoothScroll(ComponentScroll);
         _manager = manager;
         _manifest = DefaultManifest.Create();
 
         var cfg = AppConfig.Load();
+        ThemeManager.ApplyFontScale(Resources, cfg.UiFontScale);
+        UiQualityHelper.ApplyWindowIcon(this, cfg.TrayIconStyle);
         _extraModelPaths = (extraModelPaths ?? cfg.CustomModelPaths ?? new List<string>()).ToList();
         _theme = ThemeManager.Resolve(themeSetting ?? cfg.Theme);
 
@@ -62,6 +66,9 @@ public partial class ComponentWindow : Window
     private void ApplyTheme()
     {
         Background = ThemeManager.Brush(_theme.WindowBg);
+        UiQualityHelper.ApplyDwmTheme(this, _theme.IsDark, _theme.WindowBg);
+        HeaderIconBadge.Background = ThemeManager.Brush(_theme.AccentSoftBg);
+        HeaderIcon.SetValue(System.Windows.Documents.TextElement.ForegroundProperty, ThemeManager.Brush(_theme.Accent));
         TitleText.Foreground = ThemeManager.Brush(_theme.TextPrimary);
         HintText.Foreground = ThemeManager.Brush(_theme.TextSecondary);
         FooterBorder.Background = ThemeManager.Brush(_theme.WindowBg);
@@ -153,10 +160,9 @@ public partial class ComponentWindow : Window
         var button = new Button
         {
             Content = "下载",
-            Padding = new Thickness(16, 5, 16, 5),
+            Style = (Style)FindResource("PillBtn"),
+            Padding = new Thickness(16, 6, 16, 6),
             FontSize = 12,
-            Cursor = System.Windows.Input.Cursors.Hand,
-            BorderThickness = new Thickness(0),
             Background = ThemeManager.Brush(_theme.Accent),
             Foreground = Brushes.White,
             VerticalAlignment = VerticalAlignment.Center,

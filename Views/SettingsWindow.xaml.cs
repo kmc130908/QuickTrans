@@ -4,6 +4,9 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using QuickTrans.Models;
 using QuickTrans.Services;
 
@@ -49,6 +52,7 @@ public partial class SettingsWindow : Window
     private int _activeTab;
     private string? _editingProfileName;
     private bool _creatingNewProfile;
+    private SmoothScrollController? _smoothScroll;
 
     private static readonly string[] Languages =
     {
@@ -68,6 +72,14 @@ public partial class SettingsWindow : Window
     public SettingsWindow(AppConfig config, EngineManager engine, bool childMode = false, string? loadedModelPath = null)
     {
         InitializeComponent();
+        UiQualityHelper.AttachWindowQuality(this);
+        _smoothScroll = UiQualityHelper.AttachSmoothScroll(MainScroll);
+        MainScroll.ScrollChanged += (_, ev) =>
+        {
+            if (ReferenceEquals(ev.OriginalSource, MainScroll) && Math.Abs(ev.VerticalChange) > 0.1)
+                CloseOpenComboBoxes();
+        };
+        LocationChanged += (_, _) => CloseOpenComboBoxes();
 
         _config = config;
         _engine = engine;
@@ -90,6 +102,7 @@ public partial class SettingsWindow : Window
 
         Dispatcher.BeginInvoke(new Action(() =>
         {
+            AttachAllKnownComboBoxes();
             AttachWheelHandlers(PageGeneral);
 
             // 初始化过程中的假改动一并清掉
@@ -113,6 +126,9 @@ public partial class SettingsWindow : Window
     // ---------- 左侧导航分栏 ----------
 
     private readonly HashSet<UIElement> _wheelAttached = new();
+    private readonly HashSet<ScrollViewer> _innerSmoothAttached = new();
+    private readonly HashSet<ComboBox> _comboBehaviorAttached = new();
+    private readonly Dictionary<ComboBox, (ScrollViewer ScrollViewer, SmoothScrollController Controller)> _comboPopupScrollers = new();
 
     private void OnNavClick(object sender, RoutedEventArgs e)
     {
@@ -120,8 +136,23 @@ public partial class SettingsWindow : Window
             SelectTab(idx);
     }
 
+    private void CloseOpenComboBoxes()
+    {
+        ComboBox?[] boxes =
+        {
+            LanguageBox, GrabModeBox, EngineVariantBox, UnloadMinutesBox,
+            ApiTypeBox, ThemeBox, IconStyleBox, TtsVoiceZhBox, TtsVoiceEnBox,
+        };
+        foreach (var cb in boxes)
+        {
+            if (cb is { IsDropDownOpen: true })
+                cb.IsDropDownOpen = false;
+        }
+    }
+
     private void SelectTab(int index)
     {
+        CloseOpenComboBoxes();
         _activeTab = index;
         var pages = new FrameworkElement[] { PageGeneral, PageModel, PageApi, PagePopup, PageDnd, PageAbout };
         var navs = new Button[] { NavGeneral, NavModel, NavApi, NavPopup, NavDnd, NavAbout };
@@ -136,18 +167,52 @@ public partial class SettingsWindow : Window
             pages[i].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
             navs[i].Background = on ? activeBg : System.Windows.Media.Brushes.Transparent;
             navs[i].Foreground = on ? activeFg : idleFg;
+            navs[i].BorderBrush = on ? activeFg : System.Windows.Media.Brushes.Transparent;
             navs[i].FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
         }
 
         if (index == 4) RefreshRunningApps();
 
-        MainScroll?.ScrollToTop();
+        _smoothScroll?.JumpToTop();
         if (index >= 0 && index < pages.Length)
         {
             var page = pages[index];
-            Dispatcher.BeginInvoke(new Action(() => AttachWheelHandlers(page)),
-                System.Windows.Threading.DispatcherPriority.Loaded);
+            if (IsLoaded) AnimatePageEnter(page);
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                AttachWheelHandlers(page);
+                AttachInnerSmoothScroll(page);
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
         }
+    }
+
+    private static void AnimatePageEnter(FrameworkElement page)
+    {
+        var tt = page.RenderTransform as TranslateTransform;
+        if (tt == null)
+        {
+            tt = new TranslateTransform();
+            page.RenderTransform = tt;
+        }
+
+        page.Opacity = 1.0;
+        tt.Y = 0.0;
+
+        var dur = TimeSpan.FromMilliseconds(210);
+        var ease = new ExponentialEase { Exponent = 4.5, EasingMode = EasingMode.EaseOut };
+
+        var fade = new DoubleAnimation(0.38, 1.0, dur)
+        {
+            EasingFunction = ease,
+            FillBehavior = FillBehavior.Stop,
+        };
+        var slide = new DoubleAnimation(10.0, 0.0, dur)
+        {
+            EasingFunction = ease,
+            FillBehavior = FillBehavior.Stop,
+        };
+        page.BeginAnimation(OpacityProperty, fade);
+        tt.BeginAnimation(TranslateTransform.YProperty, slide);
     }
 
     private string SelectedThemeValue() => ThemeBox.SelectedIndex switch
@@ -171,7 +236,11 @@ public partial class SettingsWindow : Window
         Resources["BrushAccent"] = ThemeManager.Brush(_theme.Accent);
         Resources["BrushAccentSoft"] = ThemeManager.Brush(_theme.AccentSoftBg);
         Resources["BrushPillBg"] = ThemeManager.Brush(_theme.PillBg);
+        Resources["BrushPillHover"] = ThemeManager.Brush(_theme.PillHoverBg);
         Resources["BrushInputBg"] = ThemeManager.Brush(_theme.InputBg);
+        Resources["BrushDivider"] = ThemeManager.Brush(_theme.Divider);
+
+        UiQualityHelper.ApplyDwmTheme(this, _theme.IsDark, _theme.WindowBg);
 
         if (NavGeneral != null)
         {
@@ -184,6 +253,7 @@ public partial class SettingsWindow : Window
                 var on = i == _activeTab;
                 navs[i].Background = on ? activeBg : System.Windows.Media.Brushes.Transparent;
                 navs[i].Foreground = on ? activeFg : idleFg;
+                navs[i].BorderBrush = on ? activeFg : System.Windows.Media.Brushes.Transparent;
             }
         }
     }
@@ -240,13 +310,15 @@ public partial class SettingsWindow : Window
             ? "已加入黑名单的程序（当前为空）"
             : $"已加入黑名单的程序（共 {_blacklist.Count} 个，点击可移除）";
 
+        var mono = (System.Windows.Media.FontFamily)FindResource("MonoFont");
         foreach (var proc in _blacklist)
         {
             var captured = proc;
             var btn = new Button
             {
-                Content = $"{proc}.exe  ✕",
+                Content = $"{proc}.exe  ×",
                 Style = (Style)FindResource("FlatButton"),
+                FontFamily = mono,
                 Padding = new Thickness(10, 4, 10, 4),
                 Margin = new Thickness(0, 0, 6, 6),
                 FontSize = 11.5,
@@ -339,11 +411,90 @@ public partial class SettingsWindow : Window
     {
         foreach (var element in FindAllScrollWheelSensitive(root))
         {
+            if (element is ComboBox cb)
+                AttachComboBoxBehavior(cb);
+
             if (_wheelAttached.Add(element))
             {
                 element.AddHandler(UIElement.PreviewMouseWheelEvent,
                     new System.Windows.Input.MouseWheelEventHandler(OnComboWheel), true);
             }
+        }
+    }
+
+    private void AttachAllKnownComboBoxes()
+    {
+        ComboBox?[] boxes =
+        {
+            LanguageBox, GrabModeBox, EngineVariantBox, UnloadMinutesBox,
+            ApiTypeBox, ThemeBox, IconStyleBox, TtsVoiceZhBox, TtsVoiceEnBox,
+        };
+        foreach (var cb in boxes)
+        {
+            if (cb != null)
+                AttachComboBoxBehavior(cb);
+        }
+    }
+
+    private void AttachComboBoxBehavior(ComboBox cb)
+    {
+        if (!_comboBehaviorAttached.Add(cb)) return;
+        cb.RequestBringIntoView += (_, ev) => ev.Handled = true;
+        cb.DropDownOpened += OnComboDropDownOpened;
+    }
+
+    private void OnComboDropDownOpened(object? sender, EventArgs e)
+    {
+        if (sender is ComboBox cb)
+            EnsureComboPopupScroller(cb);
+    }
+
+    private (ScrollViewer ScrollViewer, SmoothScrollController Controller)? EnsureComboPopupScroller(ComboBox cb)
+    {
+        var popup = cb.Template?.FindName("PART_Popup", cb) as System.Windows.Controls.Primitives.Popup;
+        var dropBorder = popup?.Child as FrameworkElement;
+        if (dropBorder != null && _wheelAttached.Add(dropBorder))
+        {
+            dropBorder.AddHandler(UIElement.MouseWheelEvent,
+                new System.Windows.Input.MouseWheelEventHandler((_, ev) => ev.Handled = true), true);
+        }
+
+        if (_comboPopupScrollers.TryGetValue(cb, out var existing))
+            return existing;
+
+        var popupSv = cb.Template?.FindName("PART_DropDownScrollViewer", cb) as ScrollViewer
+                      ?? (dropBorder != null ? FindAllVisualChildren<ScrollViewer>(dropBorder).FirstOrDefault() : null);
+        if (popupSv == null) return null;
+
+        popupSv.RequestBringIntoView += (_, ev) => ev.Handled = true;
+        var ctrl = UiQualityHelper.AttachSmoothScroll(popupSv, absorbAtBoundary: true, wheelFactor: 0.78);
+        var pair = (popupSv, ctrl);
+        _comboPopupScrollers[cb] = pair;
+        return pair;
+    }
+
+    private void AttachInnerSmoothScroll(DependencyObject root)
+    {
+        if (RunningAppsScroll != null && _innerSmoothAttached.Add(RunningAppsScroll))
+            UiQualityHelper.AttachSmoothScroll(RunningAppsScroll);
+
+        foreach (var sv in FindAllVisualChildren<ScrollViewer>(root))
+        {
+            if (ReferenceEquals(sv, MainScroll)) continue;
+            if (_innerSmoothAttached.Add(sv))
+                UiQualityHelper.AttachSmoothScroll(sv);
+        }
+    }
+
+    private static IEnumerable<T> FindAllVisualChildren<T>(DependencyObject root) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match) yield return match;
+            foreach (var nested in FindAllVisualChildren<T>(child))
+                yield return nested;
         }
     }
 
@@ -930,10 +1081,13 @@ public partial class SettingsWindow : Window
 
         // 滑块：滚轮经过、布局重算都会改 Value，只有用户按住拖动才是真的想改。
         AddHandler(System.Windows.Controls.Primitives.RangeBase.ValueChangedEvent,
-            new RoutedPropertyChangedEventHandler<double>((_, _) =>
+            new RoutedPropertyChangedEventHandler<double>((_, e) =>
             {
-                if (System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
+                if (e.OriginalSource is Slider
+                    && System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
+                {
                     SetDirty(true);
+                }
             }), true);
     }
 
@@ -953,14 +1107,35 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>
-    /// 下拉框和滑块都会响应滚轮改值，用户只是想翻页却把设置改了。
-    /// 在控件上截住，把滚动转给外层。
+    /// 下拉框（收起时）和滑块都会响应滚轮改值，用户只是想翻页却把设置改了。
+    /// 收起时截住并转给平滑滚动；展开时若滚轮在下拉菜单内则放行，否则先收起下拉菜单再翻页（避免下拉悬浮框脱离原框）。
     /// </summary>
     private void OnComboWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
     {
+        if (sender is ComboBox cb && cb.IsDropDownOpen)
+        {
+            var popup = cb.Template?.FindName("PART_Popup", cb) as System.Windows.Controls.Primitives.Popup;
+            if (UiQualityHelper.IsDescendantOf(e.OriginalSource as DependencyObject, popup?.Child)
+                || UiQualityHelper.IsCursorPhysicallyInside(popup?.Child as FrameworkElement))
+            {
+                var pair = EnsureComboPopupScroller(cb);
+                if (pair != null && pair.Value.ScrollViewer.ScrollableHeight > 0.5)
+                    pair.Value.Controller.ScrollBy(-e.Delta * 0.78);
+                e.Handled = true;
+                return;
+            }
+
+            if (UiQualityHelper.IsCursorPhysicallyInside(cb))
+            {
+                e.Handled = true;
+                return;
+            }
+
+            cb.IsDropDownOpen = false;
+        }
+
         e.Handled = true;
-        if (MainScroll != null)
-            MainScroll.ScrollToVerticalOffset(MainScroll.VerticalOffset - e.Delta / 3.0);
+        _smoothScroll?.ScrollBy(-e.Delta * 1.05);
     }
 
     private static T? FindAncestor<T>(DependencyObject? node) where T : DependencyObject
@@ -1132,7 +1307,26 @@ public partial class SettingsWindow : Window
         OpacitySlider.Value = Math.Clamp(_config.PopupOpacity, 0.3, 1.0);
         OpacityLabel.Text = $"{OpacitySlider.Value * 100:F0}%";
 
+        var fontScale = Math.Clamp(_config.UiFontScale <= 0 ? 1.0 : _config.UiFontScale, 0.85, 1.35);
+        FontScaleSlider.Value = fontScale;
+        FontScaleLabel.Text = $"{fontScale * 100:F0}%";
+        ThemeManager.ApplyFontScale(Resources, fontScale);
+        ApplyFiveItemDropdownHeights(fontScale);
+
+        var popW = _config.PopupWidth < 460 ? 580 : Math.Clamp(_config.PopupWidth, 460, 840);
+        PopupWidthSlider.Value = popW;
+        PopupWidthLabel.Text = $"{popW:F0} px";
+
+        var srcH = _config.PopupSourceMaxHeight <= 0 ? 96 : Math.Clamp(_config.PopupSourceMaxHeight, 60, 240);
+        PopupSourceHeightSlider.Value = srcH;
+        PopupSourceHeightLabel.Text = $"{srcH:F0} px";
+
+        var resH = _config.PopupResultMaxHeight <= 0 ? 400 : Math.Clamp(_config.PopupResultMaxHeight, 220, 680);
+        PopupResultHeightSlider.Value = resH;
+        PopupResultHeightLabel.Text = $"{resH:F0} px";
+
         IconStyleBox.SelectedIndex = Math.Clamp(_config.TrayIconStyle - 1, 0, 3);
+        ApplyBrandIcon(_config.TrayIconStyle);
 
         AutoClosePopupBox.IsChecked = _config.PopupAutoClose;
         AutoCloseSecondsBox.Text = _config.PopupAutoCloseSeconds.ToString();
@@ -1488,6 +1682,59 @@ public partial class SettingsWindow : Window
             BroadcastThemePreview(SelectedThemeValue(), e.NewValue);
     }
 
+    private void OnIconStyleChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || IconStyleBox.SelectedIndex < 0) return;
+        ApplyBrandIcon(IconStyleBox.SelectedIndex + 1);
+    }
+
+    private void ApplyBrandIcon(int style)
+    {
+        UiQualityHelper.ApplyWindowIcon(this, style);
+        var bmp = UiQualityHelper.LoadBrandIconBitmap(style, 64);
+        if (bmp != null) BrandLogoImage.Source = bmp;
+    }
+
+    private void ApplyFiveItemDropdownHeights(double fontScale)
+    {
+        // 每个 ComboBoxItem: UiFont 行高(~16.7 * fontScale) + 内外边距(~16) -> 174px;
+        // MonoFont 行高(~14.7 * fontScale) + 内外边距(~16) -> 164px; 外层 Border 上下内边距+边框=10px。
+        var langHeight = Math.Round(5.0 * (16.7 * fontScale + 16.0) + 10.0);
+        var monoHeight = Math.Round(5.0 * (14.7 * fontScale + 16.0) + 10.0);
+        if (LanguageBox != null) LanguageBox.MaxDropDownHeight = langHeight;
+        if (UnloadMinutesBox != null) UnloadMinutesBox.MaxDropDownHeight = monoHeight;
+    }
+
+    private void OnFontScaleChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        var s = Math.Clamp(e.NewValue, 0.85, 1.35);
+        if (FontScaleLabel != null)
+            FontScaleLabel.Text = $"{s * 100:F0}%";
+        if (IsLoaded && !_suppressDirty)
+        {
+            ThemeManager.ApplyFontScale(Resources, s);
+            ApplyFiveItemDropdownHeights(s);
+        }
+    }
+
+    private void OnPopupWidthChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (PopupWidthLabel != null)
+            PopupWidthLabel.Text = $"{e.NewValue:F0} px";
+    }
+
+    private void OnPopupSourceHeightChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (PopupSourceHeightLabel != null)
+            PopupSourceHeightLabel.Text = $"{e.NewValue:F0} px";
+    }
+
+    private void OnPopupResultHeightChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (PopupResultHeightLabel != null)
+            PopupResultHeightLabel.Text = $"{e.NewValue:F0} px";
+    }
+
     private void OnUnloadPolicyChanged(object sender, RoutedEventArgs e)
     {
         if (UnloadMinutesBox != null)
@@ -1664,6 +1911,10 @@ public partial class SettingsWindow : Window
         _config.TargetLanguage = LanguageBox.SelectedItem as string ?? "简体中文";
         _config.AutoDirection = AutoDirectionBox.IsChecked == true;
         _config.PopupOpacity = Math.Clamp(OpacitySlider.Value, 0.3, 1.0);
+        _config.UiFontScale = Math.Round(Math.Clamp(FontScaleSlider.Value, 0.85, 1.35), 2);
+        _config.PopupWidth = Math.Round(Math.Clamp(PopupWidthSlider.Value, 460, 840));
+        _config.PopupSourceMaxHeight = Math.Round(Math.Clamp(PopupSourceHeightSlider.Value, 60, 240));
+        _config.PopupResultMaxHeight = Math.Round(Math.Clamp(PopupResultHeightSlider.Value, 220, 680));
         _config.TrayIconStyle = IconStyleBox.SelectedIndex + 1;
         _config.PopupAutoClose = AutoClosePopupBox.IsChecked == true;
         _config.PopupAutoCloseSeconds = int.TryParse(AutoCloseSecondsBox.Text.Trim(), out var sec)

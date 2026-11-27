@@ -9,12 +9,19 @@ namespace QuickTrans.Views;
 public partial class HistoryWindow : Window
 {
     private ThemeManager.Palette _theme;
+    private double _fontScale = 1.0;
     private List<HistoryItem> _all = new();
     private HwndSource? _hwndSource;
 
     public HistoryWindow(string? themeSetting = "system")
     {
         InitializeComponent();
+        UiQualityHelper.AttachWindowQuality(this);
+        UiQualityHelper.AttachSmoothScroll(HistoryScroll);
+        var cfg = AppConfig.Load();
+        _fontScale = cfg.UiFontScale;
+        ThemeManager.ApplyFontScale(Resources, _fontScale);
+        UiQualityHelper.ApplyWindowIcon(this, cfg.TrayIconStyle);
         _theme = ThemeManager.Resolve(themeSetting);
         ApplyTheme(themeSetting);
         Reload();
@@ -40,7 +47,19 @@ public partial class HistoryWindow : Window
         if (msg == ThemeManager.WM_QT_REFRESH_THEME)
         {
             var code = wParam.ToInt32();
-            var theme = code < 0 ? AppConfig.Load().Theme : ThemeManager.FromCode(code);
+            string theme;
+            if (code < 0)
+            {
+                var cfg = AppConfig.Load();
+                theme = cfg.Theme;
+                _fontScale = cfg.UiFontScale;
+                ThemeManager.ApplyFontScale(Resources, _fontScale);
+                UiQualityHelper.ApplyWindowIcon(this, cfg.TrayIconStyle);
+            }
+            else
+            {
+                theme = ThemeManager.FromCode(code);
+            }
             ApplyTheme(theme);
             Render();
             handled = true;
@@ -52,8 +71,10 @@ public partial class HistoryWindow : Window
     {
         _theme = ThemeManager.Resolve(themeSetting);
         Background = ThemeManager.Brush(_theme.WindowBg);
+        UiQualityHelper.ApplyDwmTheme(this, _theme.IsDark, _theme.WindowBg);
         SearchBorder.Background = ThemeManager.Brush(_theme.InputBg);
         SearchBorder.BorderBrush = ThemeManager.Brush(_theme.Border);
+        SearchIcon.SetValue(System.Windows.Documents.TextElement.ForegroundProperty, ThemeManager.Brush(_theme.TextMuted));
         SearchBox.Foreground = ThemeManager.Brush(_theme.TextPrimary);
         SearchBox.CaretBrush = ThemeManager.Brush(_theme.TextPrimary);
         SearchPlaceholder.Foreground = ThemeManager.Brush(_theme.TextMuted);
@@ -134,6 +155,7 @@ public partial class HistoryWindow : Window
         meta.Children.Add(new TextBlock
         {
             Text = $"{item.Time:MM-dd HH:mm}  ·  {item.Engine}",
+            FontFamily = (System.Windows.Media.FontFamily)FindResource("MonoFont"),
             FontSize = 10.5,
             Foreground = ThemeManager.Brush(_theme.TextMuted),
             Margin = new Thickness(8, 0, 0, 0),
@@ -183,10 +205,10 @@ public partial class HistoryWindow : Window
         stack.Children.Add(new TextBlock
         {
             Text = item.Source,
-            FontSize = 12,
+            FontSize = Math.Round(12.5 * _fontScale, 1),
             Foreground = ThemeManager.Brush(_theme.TextSecondary),
             TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 54,
+            MaxHeight = 58,
             TextTrimming = TextTrimming.CharacterEllipsis,
             Margin = new Thickness(0, 8, 0, 0),
         });
@@ -203,10 +225,10 @@ public partial class HistoryWindow : Window
         stack.Children.Add(new TextBlock
         {
             Text = item.Result,
-            FontSize = 13.5,
+            FontSize = Math.Round(14.5 * _fontScale, 1),
             Foreground = ThemeManager.Brush(_theme.TextPrimary),
             TextWrapping = TextWrapping.Wrap,
-            LineHeight = 21,
+            LineHeight = Math.Round(22.5 * _fontScale, 1),
         });
 
         return new Border

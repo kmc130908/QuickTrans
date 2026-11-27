@@ -14,7 +14,7 @@
     <ApplicationIcon>assets\tray1.ico</ApplicationIcon>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>2.2.0</Version>
+    <Version>2.3.0</Version>
     <Product>QuickTrans</Product>
     <Description>选中即译的桌面划词翻译工具</Description>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>

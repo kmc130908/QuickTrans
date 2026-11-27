@@ -59,6 +59,12 @@ public partial class PopupWindow : Window
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    private const int VK_LBUTTON = 0x01;
+    private static bool IsLeftMousePhysicallyDown() => (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
     [DllImport("imm32.dll")]
     private static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
 
@@ -110,7 +116,10 @@ public partial class PopupWindow : Window
 
     private QuickTrans.Services.ThemeManager.Palette _theme = QuickTrans.Services.ThemeManager.Light;
     private double _opacity = 1.0;
+    private double _fontScale = 1.0;
     private string _currentMode = "translate";
+    private QuickTrans.Services.SmoothScrollController? _sourceScroll;
+    private QuickTrans.Services.SmoothScrollController? _resultScroll;
 
     private Brush ActiveLangBg => QuickTrans.Services.ThemeManager.Brush(_theme.Accent);
     private Brush ActiveLangFg => Brushes.White;
@@ -141,6 +150,9 @@ public partial class PopupWindow : Window
     private HwndSource? _hwndSource;
 
     private bool _userMoved;
+    private bool _dragging;
+    private POINT _dragStartMouse;
+    private RECT _dragStartWin;
 
     /// <summary>选中文字的屏幕矩形，有值就贴着它显示，否则跟随鼠标。</summary>
     private Int32Rect? _anchorRect;
@@ -203,6 +215,9 @@ public partial class PopupWindow : Window
     public PopupWindow()
     {
         InitializeComponent();
+        QuickTrans.Services.UiQualityHelper.AttachWindowQuality(this, applyDwmTitleBar: false);
+        _sourceScroll = QuickTrans.Services.UiQualityHelper.AttachSmoothScroll(SourceScroll);
+        _resultScroll = QuickTrans.Services.UiQualityHelper.AttachSmoothScroll(ResultScroll);
         _escHookProc = EscapeHookProc;
 
         _autoCloseTimer = new DispatcherTimer
@@ -258,6 +273,7 @@ public partial class PopupWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            EndDrag();
             UninstallEscapeHook();
             _autoCloseTimer.Stop();
             _foregroundCheckTimer.Stop();
@@ -292,7 +308,12 @@ public partial class PopupWindow : Window
         // 拖动用 AddHandler + handledEventsToo:true 注册：
         // ScrollViewer（译文装在它里面）会把 MouseLeftButtonDown 标记为已处理，
         // 普通 += 收不到，表现就是点译文区域拖不动。handledEventsToo 强制接收。
+        // 使用非阻塞手动拖动并在每次移动时校验物理左键状态，杜绝 DragMove() 偶尔粘住鼠标的问题。
         AddHandler(Mouse.MouseDownEvent, new MouseButtonEventHandler(OnDragStart), true);
+        AddHandler(Mouse.PreviewMouseMoveEvent, new MouseEventHandler(OnDragMove), true);
+        AddHandler(Mouse.PreviewMouseUpEvent, new MouseButtonEventHandler(OnDragEnd), true);
+        LostMouseCapture += (_, _) => EndDrag();
+        Deactivated += (_, _) => EndDrag();
     }
 
     private void OnAnyMouseDownRaise(object sender, MouseButtonEventArgs e)
@@ -326,32 +347,56 @@ public partial class PopupWindow : Window
 
     private void OnDragStart(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
+        if (e.ChangedButton != MouseButton.Left || e.LeftButton != MouseButtonState.Pressed) return;
+        if (!IsLeftMousePhysicallyDown()) return;
         if (IsInteractive(e.OriginalSource as DependencyObject)) return;
 
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        if (!GetCursorPos(out _dragStartMouse) || !GetWindowRect(hwnd, out _dragStartWin)) return;
+
         App.Log($"drag start: src={e.OriginalSource?.GetType().Name}");
+        _dragging = true;
         _userMoved = true;
         Cursor = Cursors.SizeAll;
-
-        try
-        {
-            DragMove();
-        }
-        catch (InvalidOperationException)
-        {
-            App.Log("drag: DragMove threw InvalidOperation");
-        }
-        catch (Exception ex)
-        {
-            App.Log("drag: DragMove threw " + ex.GetType().Name + ": " + ex.Message);
-        }
-        finally
-        {
-            Cursor = Cursors.Arrow;
-            FlushPending(force: true);
-        }
-
+        CaptureMouse();
         e.Handled = true;
+    }
+
+    private void OnDragMove(object sender, MouseEventArgs e)
+    {
+        if (!_dragging) return;
+        if (e.LeftButton != MouseButtonState.Pressed || !IsLeftMousePhysicallyDown())
+        {
+            EndDrag();
+            return;
+        }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !GetCursorPos(out var cur))
+        {
+            EndDrag();
+            return;
+        }
+
+        var x = _dragStartWin.Left + (cur.X - _dragStartMouse.X);
+        var y = _dragStartWin.Top + (cur.Y - _dragStartMouse.Y);
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    private void OnDragEnd(object sender, MouseButtonEventArgs e)
+    {
+        if (_dragging && e.ChangedButton == MouseButton.Left)
+            EndDrag();
+    }
+
+    private void EndDrag()
+    {
+        if (!_dragging) return;
+        _dragging = false;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        Cursor = Cursors.Arrow;
+        FlushPending(force: true);
     }
 
     /// <summary>点到按钮、输入框、滚动条时不算拖动。</summary>
@@ -414,6 +459,7 @@ public partial class PopupWindow : Window
             {
                 var cfg = QuickTrans.Models.AppConfig.Load();
                 ApplyTheme(cfg.Theme, cfg.PopupOpacity);
+                ApplyLayoutAndFont(cfg);
                 ApplyTtsVisibility(cfg.TtsEnabled);
                 ApplyHotkeyHints(cfg.OcrHotkey, cfg.ReplaceHotkey);
             }
@@ -614,7 +660,7 @@ public partial class PopupWindow : Window
 
         var t = _theme;
         var alpha = (byte)Math.Round(_opacity * 255);
-        var panelAlpha = (byte)Math.Round(Math.Min(1.0, _opacity + 0.14) * 255);
+        var panelAlpha = alpha;
 
         RootBorder.Background = QuickTrans.Services.ThemeManager.Brush(alpha, t.CardBg);
         RootBorder.BorderBrush = QuickTrans.Services.ThemeManager.Brush(t.Border);
@@ -668,6 +714,43 @@ public partial class PopupWindow : Window
 
     public void ApplyOpacity(double value) => ApplyTheme(_theme.IsDark ? "dark" : "light", value);
 
+    /// <summary>应用配置中的浮窗宽度、原文/译文框高度与界面字号缩放。</summary>
+    public void ApplyLayoutAndFont(QuickTrans.Models.AppConfig cfg)
+    {
+        var width = cfg.PopupWidth < 460 ? 580 : Math.Clamp(cfg.PopupWidth, 460, 840);
+        var srcH = cfg.PopupSourceMaxHeight <= 0 ? 96 : Math.Clamp(cfg.PopupSourceMaxHeight, 60, 240);
+        var resH = cfg.PopupResultMaxHeight <= 0 ? 400 : Math.Clamp(cfg.PopupResultMaxHeight, 220, 680);
+        _fontScale = Math.Clamp(cfg.UiFontScale <= 0 ? 1.0 : cfg.UiFontScale, 0.85, 1.35);
+
+        Width = width;
+        SourceScroll.MaxHeight = srcH;
+        InputBox.MaxHeight = Math.Max(96, srcH);
+        ResultScroll.MaxHeight = resH;
+        MaxHeight = Math.Min(920, srcH + resH + 240);
+
+        var s = _fontScale;
+        EngineText.FontSize = Math.Round(12.0 * s, 1);
+        StatusText.FontSize = Math.Round(12.0 * s, 1);
+        ReplaceBtnTitle.FontSize = Math.Round(12.5 * s, 1);
+        OcrBtnTitle.FontSize = Math.Round(12.5 * s, 1);
+        SourceText.FontSize = Math.Round(13.5 * s, 1);
+        SourceText.LineHeight = Math.Round(21.0 * s, 1);
+        InputBox.FontSize = Math.Round(14.5 * s, 1);
+
+        var modeSize = Math.Round(12.0 * s, 1);
+        ModeTranslateBtn.FontSize = modeSize;
+        ModePolishBtn.FontSize = modeSize;
+        ModeExplainBtn.FontSize = modeSize;
+        CopyBtnText.FontSize = Math.Round(12.5 * s, 1);
+
+        ResultText.FontSize = Math.Round(16.5 * s, 1);
+        ResultText.LineHeight = Math.Round(27.0 * s, 1);
+        LangEditHint.FontSize = Math.Round(12.0 * s, 1);
+
+        if (_languages.Count > 0) ConfigureLanguages(_languages, _currentTarget);
+        if (_positioned && !_userMoved) Reposition();
+    }
+
     /// <summary>设置场景预设栏（译 / 润 / 解）的可见性与当前高亮。传统机翻接口时隐藏。</summary>
     public void ConfigureMode(string mode, bool supported)
     {
@@ -719,9 +802,9 @@ public partial class PopupWindow : Window
                 Content = ShortLabel(lang),
                 Style = pillStyle,
                 Tag = lang,
-                FontSize = 11,
-                Padding = new Thickness(9, 4, 9, 4),
-                Margin = new Thickness(0, 0, 5, 0),
+                FontSize = Math.Round(12.0 * _fontScale, 1),
+                Padding = new Thickness(10, 4.5, 10, 4.5),
+                Margin = new Thickness(0, 2, 5, 2),
                 Background = isActive ? ActiveLangBg : IdleLangBg,
                 Foreground = isActive ? ActiveLangFg : IdleLangFg,
                 ToolTip = "翻译为" + lang,
@@ -733,10 +816,10 @@ public partial class PopupWindow : Window
         // 末尾的加号，用来直接编辑常用语言
         var edit = new Button
         {
-            Content = "＋",
+            Content = new VectorIcon { Data = (Geometry)FindResource("IconPlus"), Size = 12.5 },
             Style = pillStyle,
-            FontSize = 11,
-            Padding = new Thickness(8, 4, 8, 4),
+            Padding = new Thickness(8.5, 5.5, 8.5, 5.5),
+            Margin = new Thickness(0, 2, 0, 2),
             Background = IdleLangBg,
             Foreground = IdleLangFg,
             ToolTip = "增删浮窗上显示的语言",
@@ -836,6 +919,8 @@ public partial class PopupWindow : Window
         SourcePanel.Visibility = Visibility.Visible;
         InputPanel.Visibility = Visibility.Collapsed;
         SourceText.Text = source;
+        _sourceScroll?.JumpToTop();
+        _resultScroll?.JumpToTop();
         EngineText.Text = engineLabel;
         ResultText.Text = "";
         ResultText.Foreground = QuickTrans.Services.ThemeManager.Brush(_theme.TextPrimary);
@@ -920,6 +1005,7 @@ public partial class PopupWindow : Window
     public void StartTranslate(string targetLabel)
     {
         ResultText.Text = "";
+        _resultScroll?.JumpToTop();
         ResultText.Foreground = QuickTrans.Services.ThemeManager.Brush(_theme.TextPrimary);
         StatusText.Text = $"翻译为 {targetLabel} …";
         FooterPanel.Visibility = Visibility.Visible;

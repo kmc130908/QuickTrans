@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Media;
 using Microsoft.Win32;
 
@@ -113,5 +114,17 @@ public static class ThemeManager
         var b = new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
         b.Freeze();
         return b;
+    }
+
+    /// <summary>按用户设定的缩放倍率刷新窗口动态字号资源（0.85–1.35）。</summary>
+    public static void ApplyFontScale(ResourceDictionary resources, double scale)
+    {
+        var s = Math.Clamp(scale <= 0 ? 1.0 : scale, 0.85, 1.35);
+        resources["FontSizeXs"] = Math.Round(11.5 * s, 1);
+        resources["FontSizeHint"] = Math.Round(12.0 * s, 1);
+        resources["FontSizeSm"] = Math.Round(12.5 * s, 1);
+        resources["FontSizeBase"] = Math.Round(13.5 * s, 1);
+        resources["FontSizeSection"] = Math.Round(14.5 * s, 1);
+        resources["FontSizeHeader"] = Math.Round(20.0 * s, 1);
     }
 }

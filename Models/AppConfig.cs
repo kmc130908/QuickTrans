@@ -92,7 +92,16 @@ public sealed class AppConfig
     /// <summary>浮窗上快速切换的语言按钮。</summary>
     public List<string> QuickLanguages { get; set; } = new() { "简体中文", "英语", "日语", "韩语" };
 
-    public double PopupWidth { get; set; } = 440;
+    public double PopupWidth { get; set; } = 580;
+
+    /// <summary>浮窗原文区域最大高度（像素），超出后支持平滑滚动。</summary>
+    public double PopupSourceMaxHeight { get; set; } = 96;
+
+    /// <summary>浮窗译文区域最大高度（像素），超出后支持平滑滚动。</summary>
+    public double PopupResultMaxHeight { get; set; } = 400;
+
+    /// <summary>全局界面字体缩放倍率（0.85–1.35，1.0 为默认舒适字号）。</summary>
+    public double UiFontScale { get; set; } = 1.0;
 
     /// <summary>切到其它窗口后是否自动关闭浮窗。</summary>
     public bool PopupAutoClose { get; set; } = true;
@@ -211,6 +220,11 @@ public sealed class AppConfig
         cfg.DndBlacklistProcesses ??= new List<string>();
         cfg.CustomModelPaths ??= new List<string>();
         cfg.ApiProfiles ??= new List<ApiProfile>();
+        // 历史版本遗留的默认 PopupWidth=440 并未启用，迁移为 580
+        cfg.PopupWidth = cfg.PopupWidth < 460 ? 580 : Math.Clamp(cfg.PopupWidth, 460, 840);
+        cfg.PopupSourceMaxHeight = cfg.PopupSourceMaxHeight <= 0 ? 96 : Math.Clamp(cfg.PopupSourceMaxHeight, 60, 240);
+        cfg.PopupResultMaxHeight = cfg.PopupResultMaxHeight <= 0 ? 400 : Math.Clamp(cfg.PopupResultMaxHeight, 220, 680);
+        cfg.UiFontScale = cfg.UiFontScale <= 0 ? 1.0 : Math.Clamp(cfg.UiFontScale, 0.85, 1.35);
         cfg.SyncActiveProfileToTopLevel();
     }
 
